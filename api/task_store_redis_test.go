@@ -12,7 +12,7 @@ import (
 func setupRedisStore(t *testing.T) (*RedisTaskStore, *redis.Client) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	return NewRedisTaskStore(rdb), rdb
+	return NewRedisTaskStore(rdb, 10), rdb
 }
 
 func TestRedisTaskStore_CreateGetUpdate(t *testing.T) {

@@ -336,17 +336,19 @@ func toNoteMeta(n *model.Note) mirror.NoteMeta {
 
 func toCardMeta(c *model.Card) mirror.CardMeta {
 	return mirror.CardMeta{
-		ID:        c.ID,
-		MemberID:  c.MemberID,
-		ParentID:  c.ParentID,
-		Name:      c.Name,
-		Fields:    c.Fields,
-		Reviews:   c.Reviews,
-		OrderAt:   c.OrderAt,
-		IsDeleted: c.IsDeleted,
-		CreatedAt: c.CreatedAt,
-		UpdatedAt: c.UpdatedAt,
-		USN:       c.Usn,
+		ID:            c.ID,
+		MemberID:      c.MemberID,
+		ContributorID: c.ContributorID,
+		ParentID:      c.ParentID,
+		Name:          c.Name,
+		Fields:        c.Fields,
+		Reviews:       c.Reviews,
+		Coordinates:   c.Coordinates,
+		OrderAt:       c.OrderAt,
+		IsDeleted:     c.IsDeleted,
+		CreatedAt:     c.CreatedAt,
+		UpdatedAt:     c.UpdatedAt,
+		USN:           c.Usn,
 	}
 }
 

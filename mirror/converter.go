@@ -94,19 +94,21 @@ type SharerMeta struct {
 	Role     string `json:"role"`
 }
 
-// CardMeta Card JSON 元資料
+// CardMeta Card/Chart JSON 元資料
 type CardMeta struct {
-	ID        string  `json:"id"`
-	MemberID  string  `json:"memberID,omitempty"`
-	ParentID  string  `json:"parentID"`
-	Name      string  `json:"name"`
-	Fields    *string `json:"fields,omitempty"`
-	Reviews   *string `json:"reviews,omitempty"`
-	OrderAt   *string `json:"orderAt,omitempty"`
-	IsDeleted bool    `json:"isDeleted,omitempty"`
-	CreatedAt string  `json:"createdAt,omitempty"`
-	UpdatedAt string  `json:"updatedAt,omitempty"`
-	USN       int     `json:"usn,omitempty"`
+	ID            string  `json:"id"`
+	MemberID      string  `json:"memberID,omitempty"`
+	ContributorID *string `json:"contributorId,omitempty"`
+	ParentID      string  `json:"parentID"`
+	Name          string  `json:"name"`
+	Fields        *string `json:"fields,omitempty"`
+	Reviews       *string `json:"reviews,omitempty"`
+	Coordinates   *string `json:"coordinates,omitempty"`
+	OrderAt       *string `json:"orderAt,omitempty"`
+	IsDeleted     bool    `json:"isDeleted,omitempty"`
+	CreatedAt     string  `json:"createdAt,omitempty"`
+	UpdatedAt     string  `json:"updatedAt,omitempty"`
+	USN           int     `json:"usn,omitempty"`
 }
 
 // NoteToMarkdown 將 Note 的 HTML content 轉為帶 frontmatter 的 Markdown

@@ -87,7 +87,7 @@ func main() {
 		fullExporter: fullExp,
 		ctx:          ctx,
 	}
-	taskStore := selectTaskStore(api.NewMemoryTaskStore(), rdb)
+	taskStore := selectTaskStore(api.NewMemoryTaskStore(), rdb, cfg.TaskTimeoutMinutes)
 
 	// API server
 	taskHandler := api.NewTaskHandler(taskExec, taskStore)
@@ -257,8 +257,7 @@ func (e *fullTaskExecutor) Execute(task *api.Task) error {
 	// 4. 執行後快照 + diff
 	afterSnap, snapErr := executor.TakeSnapshot(e.vaultFS, task.UserID)
 	if snapErr != nil {
-		log.Printf("[Task %s] snapshot after error: %v", task.ID, snapErr)
-		return nil
+		return fmt.Errorf("snapshot after error: %w", snapErr)
 	}
 
 	diff := executor.ComputeDiff(beforeSnap, afterSnap)
@@ -279,8 +278,7 @@ func (e *fullTaskExecutor) Execute(task *api.Task) error {
 	}
 	entries, parseErr := importer.ProcessDiff(task.UserID, diff.Created, diff.Modified, diff.Deleted, movedEntries, beforeIDMap)
 	if parseErr != nil {
-		log.Printf("[Task %s] parse diff error: %v", task.ID, parseErr)
-		return nil
+		return fmt.Errorf("parse diff error: %w", parseErr)
 	}
 
 	// 6. 回寫 MongoDB（含 USN 衝突判定 + USN 遞增 + Deletion Log）
@@ -297,10 +295,10 @@ func (e *fullTaskExecutor) Cancel(taskID string) error {
 	return e.claudeExec.Cancel(taskID)
 }
 
-func selectTaskStore(fallback api.TaskStore, rdb *redis.Client) api.TaskStore {
+func selectTaskStore(fallback api.TaskStore, rdb *redis.Client, taskTimeoutMinutes int) api.TaskStore {
 	if rdb != nil {
 		if err := rdb.Ping(context.Background()).Err(); err == nil {
-			return api.NewRedisTaskStore(rdb)
+			return api.NewRedisTaskStore(rdb, taskTimeoutMinutes)
 		}
 		log.Printf("Redis 不可用，TaskStore 降級 MemoryStore")
 	}

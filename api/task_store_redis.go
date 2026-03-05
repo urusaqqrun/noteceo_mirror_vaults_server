@@ -10,11 +10,13 @@ import (
 )
 
 type RedisTaskStore struct {
-	rdb *redis.Client
+	rdb            *redis.Client
+	activeLockTTL  time.Duration
 }
 
-func NewRedisTaskStore(rdb *redis.Client) *RedisTaskStore {
-	return &RedisTaskStore{rdb: rdb}
+func NewRedisTaskStore(rdb *redis.Client, taskTimeoutMinutes int) *RedisTaskStore {
+	ttl := time.Duration(taskTimeoutMinutes+5) * time.Minute
+	return &RedisTaskStore{rdb: rdb, activeLockTTL: ttl}
 }
 
 func (s *RedisTaskStore) taskKey(id string) string       { return "vault:task:" + id }
@@ -63,7 +65,7 @@ func (s *RedisTaskStore) GetTask(ctx context.Context, taskID string) (*Task, err
 }
 
 func (s *RedisTaskStore) TryAcquireUserActiveTask(ctx context.Context, userID, taskID string) (bool, error) {
-	ok, err := s.rdb.SetNX(ctx, s.activeKey(userID), taskID, 30*time.Minute).Result()
+	ok, err := s.rdb.SetNX(ctx, s.activeKey(userID), taskID, s.activeLockTTL).Result()
 	return ok, err
 }
 

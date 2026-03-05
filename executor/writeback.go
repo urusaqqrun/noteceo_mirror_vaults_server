@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,7 +174,7 @@ func upsertEntry(ctx context.Context, w DataWriter, userID string, e mirror.Impo
 		if e.CardMeta == nil {
 			return fmt.Errorf("chart meta is nil")
 		}
-		doc := cardMetaToBson(e.CardMeta)
+		doc := chartMetaToBson(e.CardMeta)
 		if newUSN > 0 {
 			doc["usn"] = newUSN
 		}
@@ -212,6 +213,9 @@ func folderMetaToBson(m *mirror.FolderMeta) bson.M {
 	doc := bson.M{
 		"_id":        m.ID,
 		"folderName": m.FolderName,
+		"usn":        m.USN,
+		"noteNum":    m.NoteNum,
+		"isTemp":     m.IsTemp,
 	}
 	if m.Type != nil {
 		doc["type"] = *m.Type
@@ -225,6 +229,12 @@ func folderMetaToBson(m *mirror.FolderMeta) bson.M {
 	if m.Icon != nil {
 		doc["icon"] = *m.Icon
 	}
+	if m.CreatedAt != "" {
+		doc["createdAt"] = m.CreatedAt
+	}
+	if m.UpdatedAt != "" {
+		doc["updatedAt"] = m.UpdatedAt
+	}
 	if m.FolderSummary != nil {
 		doc["folderSummary"] = *m.FolderSummary
 	}
@@ -237,8 +247,37 @@ func folderMetaToBson(m *mirror.FolderMeta) bson.M {
 	if m.AiInstruction != nil {
 		doc["aiInstruction"] = *m.AiInstruction
 	}
-	doc["usn"] = m.USN
-	doc["noteNum"] = m.NoteNum
+	doc["autoUpdateSummary"] = m.AutoUpdateSummary
+	if m.IsSummarizedNoteIds != nil {
+		doc["isSummarizedNoteIds"] = m.IsSummarizedNoteIds
+	}
+	if len(m.Indexes) > 0 {
+		doc["indexes"] = m.Indexes
+	}
+	if len(m.Fields) > 0 {
+		doc["fields"] = m.Fields
+	}
+	if m.TemplateHTML != nil {
+		doc["templateHtml"] = *m.TemplateHTML
+	}
+	if m.TemplateCSS != nil {
+		doc["templateCss"] = *m.TemplateCSS
+	}
+	if m.UIPrompt != nil {
+		doc["uiPrompt"] = *m.UIPrompt
+	}
+	if len(m.TemplateHistory) > 0 {
+		doc["templateHistory"] = m.TemplateHistory
+	}
+	doc["isShared"] = m.IsShared
+	doc["searchable"] = m.Searchable
+	doc["allowContribute"] = m.AllowContribute
+	if len(m.Sharers) > 0 {
+		doc["sharers"] = m.Sharers
+	}
+	if m.ChartKind != nil {
+		doc["chartKind"] = *m.ChartKind
+	}
 	return doc
 }
 
@@ -255,6 +294,11 @@ func noteMetaToBson(m *mirror.NoteMeta, body string) bson.M {
 		"tags":     tags,
 		"updateAt": time.Now().UnixMilli(),
 	}
+	if m.CreatedAt != "" {
+		if v, err := strconv.ParseInt(m.CreatedAt, 10, 64); err == nil {
+			doc["createAt"] = v
+		}
+	}
 	if m.FolderID != "" {
 		doc["folderID"] = m.FolderID
 	}
@@ -270,6 +314,13 @@ func noteMetaToBson(m *mirror.NoteMeta, body string) bson.M {
 	if m.AiTitle != "" {
 		doc["aiTitle"] = m.AiTitle
 	}
+	if m.AiTags != nil {
+		doc["aiTags"] = m.AiTags
+	}
+	if m.ImgURLs != nil {
+		doc["imgURLs"] = m.ImgURLs
+	}
+	doc["isNew"] = m.IsNew
 	if body != "" {
 		html, err := mirror.MarkdownToHTML(body)
 		if err != nil {
@@ -297,6 +348,41 @@ func cardMetaToBson(m *mirror.CardMeta) bson.M {
 	}
 	if m.OrderAt != nil {
 		doc["orderAt"] = *m.OrderAt
+	}
+	if m.ContributorID != nil {
+		doc["contributorId"] = *m.ContributorID
+	}
+	if m.Coordinates != nil {
+		doc["coordinates"] = *m.Coordinates
+	}
+	if m.CreatedAt != "" {
+		doc["createdAt"] = m.CreatedAt
+	}
+	if m.UpdatedAt != "" {
+		doc["updatedAt"] = m.UpdatedAt
+	}
+	return doc
+}
+
+// chartMetaToBson Chart 專用：CardMeta.Fields 映射到 MongoDB 的 data 欄位（而非 fields）
+func chartMetaToBson(m *mirror.CardMeta) bson.M {
+	doc := bson.M{
+		"_id":      m.ID,
+		"parentID": m.ParentID,
+		"name":     m.Name,
+		"usn":      m.USN,
+	}
+	if m.Fields != nil {
+		doc["data"] = *m.Fields
+	}
+	if m.OrderAt != nil {
+		doc["orderAt"] = *m.OrderAt
+	}
+	if m.CreatedAt != "" {
+		doc["createdAt"] = m.CreatedAt
+	}
+	if m.UpdatedAt != "" {
+		doc["updatedAt"] = m.UpdatedAt
 	}
 	return doc
 }
