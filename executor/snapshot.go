@@ -2,6 +2,7 @@ package executor
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -22,7 +23,14 @@ func isSystemFile(relPath string) bool {
 
 // TakeSnapshot 掃描用戶 Vault 目錄產生檔案快照（用於 AI 任務前後 diff 比對）
 func TakeSnapshot(vaultFS mirror.VaultFS, userID string) (map[string]FileSnapshot, error) {
+	snap, _, err := TakeSnapshotAndPathIDMap(vaultFS, userID)
+	return snap, err
+}
+
+// TakeSnapshotAndPathIDMap 單次 walk 同時建立 snapshot 與 path→docID。
+func TakeSnapshotAndPathIDMap(vaultFS mirror.VaultFS, userID string) (map[string]FileSnapshot, map[string]string, error) {
 	snap := make(map[string]FileSnapshot)
+	idMap := make(map[string]string)
 	err := vaultFS.Walk(userID, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info == nil || info.IsDir() {
 			return nil
@@ -47,10 +55,29 @@ func TakeSnapshot(vaultFS mirror.VaultFS, userID string) (map[string]FileSnapsho
 			Hash:    fmt.Sprintf("%x", h),
 			ModTime: info.ModTime(),
 		}
+
+		if strings.HasSuffix(path, ".md") {
+			meta, _, pErr := mirror.MarkdownToNote(string(data))
+			if pErr == nil && meta.ID != "" {
+				idMap[relPath] = meta.ID
+			}
+		} else if strings.HasSuffix(path, "_folder.json") {
+			meta, jErr := mirror.JSONToFolder(data)
+			if jErr == nil && meta.ID != "" {
+				idMap[relPath] = meta.ID
+			}
+		} else if strings.HasSuffix(path, ".json") {
+			var doc map[string]any
+			if jErr := json.Unmarshal(data, &doc); jErr == nil {
+				if id, ok := doc["id"].(string); ok && id != "" {
+					idMap[relPath] = id
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return snap, nil
+	return snap, idMap, nil
 }

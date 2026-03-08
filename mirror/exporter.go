@@ -7,6 +7,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/urusaqqrun/vault-mirror-service/model"
 	"golang.org/x/sync/errgroup"
@@ -16,6 +17,12 @@ import (
 type Exporter struct {
 	fs       VaultFS
 	resolver *PathResolver
+
+	// docPathIndex 快取 docID -> 路徑，避免每次匯出都全量 walk EFS
+	indexMu      sync.RWMutex
+	indexBuild   sync.Mutex
+	indexUserID  string
+	docPathIndex map[string]string
 }
 
 func NewExporter(fs VaultFS, resolver *PathResolver) *Exporter {
@@ -41,7 +48,11 @@ func (e *Exporter) ExportFolder(userId string, meta FolderMeta) error {
 	}
 
 	jsonPath := filepath.Join(fullPath, "_folder.json")
-	return e.fs.WriteFile(jsonPath, data)
+	if err := e.fs.WriteFile(jsonPath, data); err != nil {
+		return err
+	}
+	e.setIndexedPath(userId, meta.ID, fullPath)
+	return nil
 }
 
 // ExportNote 匯出 Note 為 .md 檔案（含 frontmatter）
@@ -61,7 +72,11 @@ func (e *Exporter) ExportNote(userId string, meta NoteMeta, html string) error {
 	// 先刪掉同 ID 但不同標題的舊檔案（標題改了 → 路徑改了）
 	e.cleanupOldNoteFile(userId, meta.ID, fullPath)
 
-	return e.fs.WriteFile(fullPath, []byte(md))
+	if err := e.fs.WriteFile(fullPath, []byte(md)); err != nil {
+		return err
+	}
+	e.setIndexedPath(userId, meta.ID, fullPath)
+	return nil
 }
 
 // ExportCard 匯出 Card 為 .json 檔案
@@ -78,7 +93,11 @@ func (e *Exporter) ExportCard(userId string, meta CardMeta) error {
 
 	fullPath := filepath.Join(userId, cardPath)
 	e.cleanupOldCardPath(userId, meta.ID, fullPath)
-	return e.fs.WriteFile(fullPath, data)
+	if err := e.fs.WriteFile(fullPath, data); err != nil {
+		return err
+	}
+	e.setIndexedPath(userId, meta.ID, fullPath)
+	return nil
 }
 
 // ExportChart 匯出 Chart 為 .json 檔案
@@ -95,7 +114,11 @@ func (e *Exporter) ExportChart(userId string, meta CardMeta) error {
 
 	fullPath := filepath.Join(userId, chartPath)
 	e.cleanupOldCardPath(userId, meta.ID, fullPath)
-	return e.fs.WriteFile(fullPath, data)
+	if err := e.fs.WriteFile(fullPath, data); err != nil {
+		return err
+	}
+	e.setIndexedPath(userId, meta.ID, fullPath)
+	return nil
 }
 
 // DeleteFolder 刪除 Folder 對應的整個目錄
@@ -104,7 +127,11 @@ func (e *Exporter) DeleteFolder(userId string, folderID string) error {
 	if err != nil {
 		return fmt.Errorf("resolve folder path: %w", err)
 	}
-	return e.fs.RemoveAll(filepath.Join(userId, folderPath))
+	if err := e.fs.RemoveAll(filepath.Join(userId, folderPath)); err != nil {
+		return err
+	}
+	e.removeIndexedPath(userId, folderID)
+	return nil
 }
 
 // DeleteNote 刪除 Note 對應的 .md 檔案
@@ -113,41 +140,22 @@ func (e *Exporter) DeleteNote(userId string, noteID string, title string, parent
 	if err != nil {
 		return fmt.Errorf("resolve note path: %w", err)
 	}
-	return e.fs.Remove(filepath.Join(userId, notePath))
+	if err := e.fs.Remove(filepath.Join(userId, notePath)); err != nil {
+		return err
+	}
+	e.removeIndexedPath(userId, noteID)
+	return nil
 }
 
 // cleanupOldNoteFile 清理同 ID 但路徑不同的舊 .md 檔案。
 // 先掃描新路徑的父目錄（處理標題改名），
 // 再 walk 整個用戶目錄（處理跨資料夾搬移）。
 func (e *Exporter) cleanupOldNoteFile(userId string, noteID string, newFullPath string) {
-	// 快速路徑：先只掃同一個目錄
-	dir := filepath.Dir(newFullPath)
-	if e.removeOldNoteInDir(dir, noteID, newFullPath) {
-		return
+	e.ensureDocPathIndex(userId)
+	oldPath := e.getIndexedPath(userId, noteID)
+	if oldPath != "" && oldPath != newFullPath {
+		_ = e.fs.Remove(oldPath)
 	}
-
-	// 慢路徑：walk 整個用戶根目錄處理跨資料夾搬移
-	e.fs.Walk(userId, func(path string, info fs.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".md") || path == newFullPath {
-			return nil
-		}
-		data, rErr := e.fs.ReadFile(path)
-		if rErr != nil {
-			return nil
-		}
-		meta, _, pErr := MarkdownToNote(string(data))
-		if pErr != nil {
-			return nil
-		}
-		if meta.ID == noteID {
-			e.fs.Remove(path)
-			return filepath.SkipAll
-		}
-		return nil
-	})
 }
 
 // ExportBatchEntry 批次匯出項目
@@ -228,55 +236,105 @@ func (e *Exporter) removeOldNoteInDir(dir string, noteID string, excludePath str
 
 // cleanupOldFolderPath 清理同 ID 但舊位置的資料夾（搬移/改名情境）
 func (e *Exporter) cleanupOldFolderPath(userID string, folderID string, newFolderPath string) {
-	oldFolderPath := ""
-	e.fs.Walk(userID, func(path string, info fs.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() || !strings.HasSuffix(path, "_folder.json") {
-			return nil
-		}
-		data, rErr := e.fs.ReadFile(path)
-		if rErr != nil {
-			return nil
-		}
-		meta, pErr := JSONToFolder(data)
-		if pErr != nil || meta.ID != folderID {
-			return nil
-		}
-		if pathDir := filepath.Dir(path); pathDir != newFolderPath {
-			oldFolderPath = pathDir
-		}
-		return filepath.SkipAll
-	})
-	if oldFolderPath != "" {
+	e.ensureDocPathIndex(userID)
+	oldFolderPath := e.getIndexedPath(userID, folderID)
+	if oldFolderPath != "" && oldFolderPath != newFolderPath {
 		_ = e.fs.RemoveAll(oldFolderPath)
 	}
 }
 
 // cleanupOldCardPath 清理同 ID 但舊位置的 card/chart JSON 檔
 func (e *Exporter) cleanupOldCardPath(userID string, docID string, newPath string) {
-	oldPath := ""
+	e.ensureDocPathIndex(userID)
+	oldPath := e.getIndexedPath(userID, docID)
+	if oldPath != "" && oldPath != newPath {
+		_ = e.fs.Remove(oldPath)
+	}
+}
+
+func (e *Exporter) ensureDocPathIndex(userID string) {
+	e.indexMu.RLock()
+	if e.docPathIndex != nil && e.indexUserID == userID {
+		e.indexMu.RUnlock()
+		return
+	}
+	e.indexMu.RUnlock()
+
+	e.indexBuild.Lock()
+	defer e.indexBuild.Unlock()
+
+	e.indexMu.RLock()
+	if e.docPathIndex != nil && e.indexUserID == userID {
+		e.indexMu.RUnlock()
+		return
+	}
+	e.indexMu.RUnlock()
+
+	next := make(map[string]string)
 	e.fs.Walk(userID, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info == nil || info.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".json") || strings.HasSuffix(path, "_folder.json") || path == newPath {
 			return nil
 		}
 		data, rErr := e.fs.ReadFile(path)
 		if rErr != nil {
 			return nil
 		}
-		var payload map[string]interface{}
-		if uErr := json.Unmarshal(data, &payload); uErr != nil {
+		if strings.HasSuffix(path, "_folder.json") {
+			meta, pErr := JSONToFolder(data)
+			if pErr == nil && meta.ID != "" {
+				next[meta.ID] = filepath.Dir(path)
+			}
 			return nil
 		}
-		id, _ := payload["id"].(string)
-		if id == docID {
-			oldPath = path
-			return filepath.SkipAll
+		if strings.HasSuffix(path, ".md") {
+			meta, _, pErr := MarkdownToNote(string(data))
+			if pErr == nil && meta.ID != "" {
+				next[meta.ID] = path
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".json") {
+			var payload map[string]interface{}
+			if uErr := json.Unmarshal(data, &payload); uErr == nil {
+				if id, ok := payload["id"].(string); ok && id != "" {
+					next[id] = path
+				}
+			}
 		}
 		return nil
 	})
-	if oldPath != "" {
-		_ = e.fs.Remove(oldPath)
+
+	e.indexMu.Lock()
+	e.docPathIndex = next
+	e.indexUserID = userID
+	e.indexMu.Unlock()
+}
+
+func (e *Exporter) getIndexedPath(userID, docID string) string {
+	e.indexMu.RLock()
+	defer e.indexMu.RUnlock()
+	if e.indexUserID != userID || e.docPathIndex == nil {
+		return ""
 	}
+	return e.docPathIndex[docID]
+}
+
+func (e *Exporter) setIndexedPath(userID, docID, path string) {
+	e.ensureDocPathIndex(userID)
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
+	if e.indexUserID != userID || e.docPathIndex == nil {
+		return
+	}
+	e.docPathIndex[docID] = path
+}
+
+func (e *Exporter) removeIndexedPath(userID, docID string) {
+	e.ensureDocPathIndex(userID)
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
+	if e.indexUserID != userID || e.docPathIndex == nil {
+		return
+	}
+	delete(e.docPathIndex, docID)
 }

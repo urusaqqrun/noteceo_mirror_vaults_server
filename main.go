@@ -240,12 +240,10 @@ func (e *fullTaskExecutor) Execute(task *api.Task) error {
 	}
 
 	// 2. 執行前快照 + path→ID 映射（刪除回寫用）
-	beforeSnap, snapErr := executor.TakeSnapshot(e.vaultFS, task.UserID)
+	beforeSnap, beforeIDMap, snapErr := executor.TakeSnapshotAndPathIDMap(e.vaultFS, task.UserID)
 	if snapErr != nil {
-		log.Printf("[Task %s] snapshot before error: %v", task.ID, snapErr)
-		beforeSnap = make(map[string]executor.FileSnapshot)
+		return fmt.Errorf("snapshot before error: %w", snapErr)
 	}
-	beforeIDMap := executor.BuildPathIDMap(e.vaultFS, task.UserID)
 
 	// 3. 執行 Claude CLI
 	output, err := e.claudeExec.ExecuteTask(execCtx, task.ID, workDir, task.Instruction)
