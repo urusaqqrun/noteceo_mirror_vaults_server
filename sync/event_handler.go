@@ -107,8 +107,8 @@ func (h *SyncEventHandler) handleItemEvent(ctx context.Context, event SyncEvent)
 		return nil
 	}
 
-	// FOLDER 變更時清除 PathResolver 快取
-	if item.Type == model.ItemTypeFolder {
+	// 資料夾類型變更時清除 PathResolver 快取
+	if model.IsFolder(item.Type) {
 		h.InvalidateResolver(event.UserID)
 	}
 
@@ -118,17 +118,17 @@ func (h *SyncEventHandler) handleItemEvent(ctx context.Context, event SyncEvent)
 	}
 	exporter := mirror.NewExporter(h.fs, resolver)
 
-	switch item.Type {
-	case model.ItemTypeFolder:
+	switch {
+	case model.IsFolder(item.Type):
 		meta := mirror.ItemToFolderMeta(item)
 		return exporter.ExportFolder(event.UserID, meta)
-	case model.ItemTypeNote, model.ItemTypeTodo:
+	case item.Type == model.ItemTypeNote || item.Type == model.ItemTypeTodo:
 		meta, content := mirror.ItemToNoteMeta(item)
 		return exporter.ExportNote(event.UserID, meta, content)
-	case model.ItemTypeCard:
+	case item.Type == model.ItemTypeCard:
 		meta := mirror.ItemToCardMeta(item)
 		return exporter.ExportCard(event.UserID, meta)
-	case model.ItemTypeChart:
+	case item.Type == model.ItemTypeChart:
 		meta := mirror.ItemToChartMeta(item)
 		return exporter.ExportChart(event.UserID, meta)
 	default:

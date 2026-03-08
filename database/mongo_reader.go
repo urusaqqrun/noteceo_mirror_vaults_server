@@ -132,11 +132,14 @@ func (m *MongoReader) GetItem(ctx context.Context, userID, itemID string) (*mode
 	return &item, nil
 }
 
-// ListItemFolders 從 Item collection 查詢 itemType=FOLDER 的 items，用於建構 PathResolver
+// ListItemFolders 從 Item collection 查詢所有資料夾類型 items，用於建構 PathResolver
 func (m *MongoReader) ListItemFolders(ctx context.Context, userID string) ([]*model.Item, error) {
 	cur, err := m.itemsCol().Find(ctx, bson.M{
-		"itemType":         "FOLDER",
-		"fields.memberID":  userID,
+		"itemType": bson.M{"$in": []string{
+			model.ItemTypeFolder, model.ItemTypeNoteFolder,
+			model.ItemTypeCardFolder, model.ItemTypeChartFolder, model.ItemTypeTodoFolder,
+		}},
+		"fields.memberID": userID,
 	})
 	if err != nil {
 		return nil, err

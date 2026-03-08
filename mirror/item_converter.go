@@ -9,10 +9,16 @@ import (
 // ItemToNoteMeta 將 Item（NOTE/TODO）轉換為 NoteMeta + HTML content
 func ItemToNoteMeta(item *model.Item) (NoteMeta, string) {
 	f := item.Fields
+	parentID := model.StrPtrDeref(model.StrPtrField(f, "parentID"))
+	folderID := strFieldDefault(f, "folderID", "")
+	// parentID 為空時退回 folderID（相容舊資料）
+	if parentID == "" {
+		parentID = folderID
+	}
 	meta := NoteMeta{
 		ID:        item.ID,
-		ParentID:  model.StrPtrDeref(model.StrPtrField(f, "parentID")),
-		FolderID:  strFieldDefault(f, "folderID", ""),
+		ParentID:  parentID,
+		FolderID:  folderID,
 		Title:     item.GetTitle(),
 		USN:       item.GetUSN(),
 		Tags:      model.StringSliceField(f, "tags"),
@@ -39,14 +45,21 @@ func ItemToNoteMeta(item *model.Item) (NoteMeta, string) {
 	return meta, content
 }
 
-// ItemToFolderMeta 將 Item（FOLDER）轉換為 FolderMeta
+// ItemToFolderMeta 將 Item（FOLDER / NOTE_FOLDER / …）轉換為 FolderMeta
 func ItemToFolderMeta(item *model.Item) FolderMeta {
 	f := item.Fields
+	folderType := model.StrPtrField(f, "folderType")
+	// 若 fields 沒有 folderType，從 itemType 推斷（NOTE_FOLDER→"NOTE"）
+	if folderType == nil {
+		if sub := model.FolderSubType(item.Type); sub != "" {
+			folderType = &sub
+		}
+	}
 	meta := FolderMeta{
 		ID:         item.ID,
 		MemberID:   item.GetMemberID(),
 		FolderName: item.GetName(),
-		Type:       model.StrPtrField(f, "folderType"),
+		Type:       folderType,
 		ParentID:   model.StrPtrField(f, "parentID"),
 		OrderAt:    model.StrPtrField(f, "orderAt"),
 		Icon:       model.StrPtrField(f, "icon"),
@@ -115,8 +128,12 @@ func ItemToChartMeta(item *model.Item) CardMeta {
 	}
 }
 
-// ItemFolderType 回傳 FOLDER item 的子類型（NOTE/CARD/CHART），用於 PathResolver
+// ItemFolderType 回傳 FOLDER item 的子類型（NOTE/CARD/CHART），用於 PathResolver。
+// 優先從 itemType（NOTE_FOLDER→NOTE）推斷，再看 fields.folderType，預設 NOTE。
 func ItemFolderType(item *model.Item) string {
+	if sub := model.FolderSubType(item.Type); sub != "" {
+		return sub
+	}
 	if v := model.StrPtrField(item.Fields, "folderType"); v != nil {
 		return *v
 	}

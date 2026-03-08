@@ -137,9 +137,25 @@ func TestResolveFolderPath_CircularReference(t *testing.T) {
 
 func TestResolveFolderPath_NotFound(t *testing.T) {
 	r := NewPathResolver([]FolderNode{})
-	_, err := r.ResolveFolderPath("nonexistent")
-	if err == nil {
-		t.Error("expected error for nonexistent folder, got nil")
+	got, err := r.ResolveFolderPath("nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "_unsorted" {
+		t.Errorf("got %q, want %q", got, "_unsorted")
+	}
+}
+
+func TestResolveFolderPath_EmptyID(t *testing.T) {
+	r := NewPathResolver([]FolderNode{
+		{ID: "f1", FolderName: "工作", Type: "NOTE", ParentID: nil},
+	})
+	got, err := r.ResolveFolderPath("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "_unsorted" {
+		t.Errorf("got %q, want %q", got, "_unsorted")
 	}
 }
 
@@ -165,9 +181,12 @@ func TestRemoveFolder(t *testing.T) {
 	})
 	r.RemoveFolder("f2")
 
-	_, err := r.ResolveFolderPath("f2")
-	if err == nil {
-		t.Error("expected error after removing folder, got nil")
+	got, err := r.ResolveFolderPath("f2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "_unsorted" {
+		t.Errorf("got %q, want %q (should fallback after removal)", got, "_unsorted")
 	}
 }
 

@@ -11,12 +11,41 @@ type Item struct {
 
 // Item type 常數
 const (
-	ItemTypeFolder = "FOLDER"
-	ItemTypeNote   = "NOTE"
-	ItemTypeTodo   = "TODO"
-	ItemTypeCard   = "CARD"
-	ItemTypeChart  = "CHART"
+	ItemTypeFolder     = "FOLDER"
+	ItemTypeNoteFolder = "NOTE_FOLDER"
+	ItemTypeCardFolder = "CARD_FOLDER"
+	ItemTypeChartFolder = "CHART_FOLDER"
+	ItemTypeTodoFolder = "TODO_FOLDER"
+	ItemTypeNote       = "NOTE"
+	ItemTypeTodo       = "TODO"
+	ItemTypeCard       = "CARD"
+	ItemTypeChart      = "CHART"
 )
+
+// IsFolder 判斷 itemType 是否為資料夾類型（含 FOLDER / NOTE_FOLDER / CARD_FOLDER 等）
+func IsFolder(itemType string) bool {
+	switch itemType {
+	case ItemTypeFolder, ItemTypeNoteFolder, ItemTypeCardFolder, ItemTypeChartFolder, ItemTypeTodoFolder:
+		return true
+	}
+	return false
+}
+
+// FolderSubType 從 itemType 取得資料夾子類型（NOTE_FOLDER→"NOTE"），通用 FOLDER 回傳空字串
+func FolderSubType(itemType string) string {
+	switch itemType {
+	case ItemTypeNoteFolder:
+		return "NOTE"
+	case ItemTypeCardFolder:
+		return "CARD"
+	case ItemTypeChartFolder:
+		return "CHART"
+	case ItemTypeTodoFolder:
+		return "TODO"
+	default:
+		return ""
+	}
+}
 
 func (i *Item) GetMemberID() string {
 	return strField(i.Fields, "memberID")

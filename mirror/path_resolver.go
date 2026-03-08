@@ -36,7 +36,12 @@ func NewPathResolver(folders []FolderNode) *PathResolver {
 
 // ResolveFolderPath 解析 Folder 在 Vault 中的路徑（不含 vaultRoot）
 // 回傳格式: "NOTE/工作/會議紀錄"
+// folderID 為空時回傳 "_unsorted"（容許 parentID 缺失的線上資料）
 func (r *PathResolver) ResolveFolderPath(folderID string) (string, error) {
+	if folderID == "" {
+		return "_unsorted", nil
+	}
+
 	r.mu.RLock()
 	if cached, ok := r.cache[folderID]; ok {
 		r.mu.RUnlock()
@@ -46,7 +51,7 @@ func (r *PathResolver) ResolveFolderPath(folderID string) (string, error) {
 	r.mu.RUnlock()
 
 	if !ok {
-		return "", fmt.Errorf("folder %q not found", folderID)
+		return "_unsorted", nil
 	}
 
 	r.mu.RLock()

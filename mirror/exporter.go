@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/urusaqqrun/vault-mirror-service/model"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -165,23 +166,23 @@ func (e *Exporter) ExportBatch(userId string, entries []ExportBatchEntry) error 
 	for _, entry := range entries {
 		entry := entry
 		g.Go(func() error {
-			switch entry.ItemType {
-			case "FOLDER":
+			switch {
+			case model.IsFolder(entry.ItemType):
 				if entry.FolderMeta == nil {
 					return nil
 				}
 				return e.ExportFolder(userId, *entry.FolderMeta)
-			case "NOTE", "TODO":
+			case entry.ItemType == "NOTE" || entry.ItemType == "TODO":
 				if entry.NoteMeta == nil {
 					return nil
 				}
 				return e.ExportNote(userId, *entry.NoteMeta, entry.NoteHTML)
-			case "CARD":
+			case entry.ItemType == "CARD":
 				if entry.CardMeta == nil {
 					return nil
 				}
 				return e.ExportCard(userId, *entry.CardMeta)
-			case "CHART":
+			case entry.ItemType == "CHART":
 				if entry.CardMeta == nil {
 					return nil
 				}
