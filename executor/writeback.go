@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/urusaqqrun/vault-mirror-service/mirror"
@@ -38,12 +39,12 @@ type USNIncrementer interface {
 
 // WriteBackResult 回寫統計
 type WriteBackResult struct {
-	Created  int
-	Updated  int
-	Moved    int
-	Deleted  int
-	Skipped  int
-	Errors   int
+	Created int
+	Updated int
+	Moved   int
+	Deleted int
+	Skipped int
+	Errors  int
 }
 
 // WriteBack 將 ImportEntry 清單寫回 MongoDB，使用 errgroup 並行處理（上限 8）。
@@ -177,6 +178,7 @@ func upsertEntry(ctx context.Context, w DataWriter, userID string, e mirror.Impo
 		if newUSN > 0 {
 			doc["usn"] = newUSN
 		}
+		ensureDocID(doc, e.Action)
 		return w.UpsertFolder(ctx, userID, doc)
 	case "note":
 		if e.NoteMeta == nil {
@@ -192,6 +194,7 @@ func upsertEntry(ctx context.Context, w DataWriter, userID string, e mirror.Impo
 				doc["parentID"] = newParent
 			}
 		}
+		ensureDocID(doc, e.Action)
 		return w.UpsertNote(ctx, userID, doc)
 	case "card":
 		if e.CardMeta == nil {
@@ -201,6 +204,7 @@ func upsertEntry(ctx context.Context, w DataWriter, userID string, e mirror.Impo
 		if newUSN > 0 {
 			doc["usn"] = newUSN
 		}
+		ensureDocID(doc, e.Action)
 		return w.UpsertCard(ctx, userID, doc)
 	case "chart":
 		if e.CardMeta == nil {
@@ -210,6 +214,7 @@ func upsertEntry(ctx context.Context, w DataWriter, userID string, e mirror.Impo
 		if newUSN > 0 {
 			doc["usn"] = newUSN
 		}
+		ensureDocID(doc, e.Action)
 		return w.UpsertChart(ctx, userID, doc)
 	default:
 		return fmt.Errorf("unknown collection: %s", e.Collection)
@@ -221,7 +226,7 @@ func upsertItemEntry(ctx context.Context, w DataWriter, userID string, e mirror.
 	var doc bson.M
 	switch {
 	case e.FolderMeta != nil:
-		doc = folderMetaToItemBson(e.FolderMeta, newUSN)
+		doc = folderMetaToItemBson(e.FolderMeta, e.ItemType, newUSN)
 	case e.NoteMeta != nil:
 		doc = noteMetaToItemBson(e.NoteMeta, e.NoteBody, newUSN)
 	case e.CardMeta != nil:
@@ -229,11 +234,12 @@ func upsertItemEntry(ctx context.Context, w DataWriter, userID string, e mirror.
 	default:
 		return fmt.Errorf("item entry has no meta data")
 	}
+	ensureDocID(doc, e.Action)
 	return w.UpsertItem(ctx, userID, doc)
 }
 
 // folderMetaToItemBson 將 FolderMeta 轉為 Item collection 的 bson.M
-func folderMetaToItemBson(m *mirror.FolderMeta, usn int) bson.M {
+func folderMetaToItemBson(m *mirror.FolderMeta, itemType string, usn int) bson.M {
 	fields := bson.M{
 		"memberID": m.MemberID,
 		"name":     m.FolderName,
@@ -308,8 +314,17 @@ func folderMetaToItemBson(m *mirror.FolderMeta, usn int) bson.M {
 	}
 	return bson.M{
 		"_id":      m.ID,
-		"itemType": "FOLDER",
+		"itemType": normalizeFolderItemType(itemType),
 		"fields":   fields,
+	}
+}
+
+func normalizeFolderItemType(itemType string) string {
+	switch itemType {
+	case "FOLDER", "NOTE_FOLDER", "TODO_FOLDER", "CARD_FOLDER", "CHART_FOLDER":
+		return itemType
+	default:
+		return "FOLDER"
 	}
 }
 
@@ -320,11 +335,11 @@ func noteMetaToItemBson(m *mirror.NoteMeta, body string, usn int) bson.M {
 		itemType = "TODO"
 	}
 	fields := bson.M{
-		"title":    m.Title,
-		"name":     m.Title,
-		"parentID": m.ParentID,
+		"title":     m.Title,
+		"name":      m.Title,
+		"parentID":  m.ParentID,
 		"updatedAt": time.Now().UnixMilli(),
-		"isNew":    m.IsNew,
+		"isNew":     m.IsNew,
 	}
 	if usn > 0 {
 		fields["usn"] = usn
@@ -419,6 +434,19 @@ func cardMetaToItemBson(m *mirror.CardMeta, itemType string, usn int) bson.M {
 		"_id":      m.ID,
 		"itemType": itemType,
 		"fields":   fields,
+	}
+}
+
+// ensureDocID 確保 BSON doc 有 _id；AI 新建的文件可能沒有 ID，自動生成 ObjectID
+func ensureDocID(doc bson.M, action mirror.ImportAction) {
+	if action != mirror.ImportActionCreate {
+		return
+	}
+	id, ok := doc["_id"].(string)
+	if !ok || id == "" {
+		newID := primitive.NewObjectID().Hex()
+		doc["_id"] = newID
+		log.Printf("[WriteBack] auto-generated _id=%s for new document", newID)
 	}
 }
 
@@ -592,10 +620,11 @@ func noteMetaToBson(m *mirror.NoteMeta, body string) bson.M {
 
 func cardMetaToBson(m *mirror.CardMeta) bson.M {
 	doc := bson.M{
-		"_id":      m.ID,
-		"parentID": m.ParentID,
-		"name":     m.Name,
-		"usn":      m.USN,
+		"_id":       m.ID,
+		"parentID":  m.ParentID,
+		"name":      m.Name,
+		"usn":       m.USN,
+		"isDeleted": m.IsDeleted,
 	}
 	if m.Fields != nil {
 		doc["fields"] = *m.Fields
@@ -624,10 +653,11 @@ func cardMetaToBson(m *mirror.CardMeta) bson.M {
 // chartMetaToBson Chart 專用：CardMeta.Fields 映射到 MongoDB 的 data 欄位（而非 fields）
 func chartMetaToBson(m *mirror.CardMeta) bson.M {
 	doc := bson.M{
-		"_id":      m.ID,
-		"parentID": m.ParentID,
-		"name":     m.Name,
-		"usn":      m.USN,
+		"_id":       m.ID,
+		"parentID":  m.ParentID,
+		"name":      m.Name,
+		"usn":       m.USN,
+		"isDeleted": m.IsDeleted,
 	}
 	if m.Fields != nil {
 		doc["data"] = *m.Fields
