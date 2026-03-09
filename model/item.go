@@ -1,10 +1,14 @@
 package model
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Item 統一資料類型（對應 go-service 的 Item collection）
 type Item struct {
 	ID     string                 `json:"id" bson:"_id,omitempty"`
+	Name   string                 `json:"name" bson:"name"`
 	Type   string                 `json:"itemType" bson:"itemType"`
 	Fields map[string]interface{} `json:"fields" bson:"fields"`
 }
@@ -22,29 +26,18 @@ const (
 	ItemTypeChart      = "CHART"
 )
 
-// IsFolder 判斷 itemType 是否為資料夾類型（含 FOLDER / NOTE_FOLDER / CARD_FOLDER 等）
+// IsFolder 判斷 itemType 是否為資料夾類型（通用：任何 _FOLDER 結尾都算）
 func IsFolder(itemType string) bool {
-	switch itemType {
-	case ItemTypeFolder, ItemTypeNoteFolder, ItemTypeCardFolder, ItemTypeChartFolder, ItemTypeTodoFolder:
-		return true
-	}
-	return false
+	return strings.HasSuffix(itemType, "_FOLDER")
 }
 
-// FolderSubType 從 itemType 取得資料夾子類型（NOTE_FOLDER→"NOTE"），通用 FOLDER 回傳空字串
+// FolderSubType 從 itemType 取得資料夾子類型（NOTE_FOLDER→"NOTE"，KANBAN_FOLDER→"KANBAN"）
+// 非 _FOLDER 結尾回傳空字串
 func FolderSubType(itemType string) string {
-	switch itemType {
-	case ItemTypeNoteFolder:
-		return "NOTE"
-	case ItemTypeCardFolder:
-		return "CARD"
-	case ItemTypeChartFolder:
-		return "CHART"
-	case ItemTypeTodoFolder:
-		return "TODO"
-	default:
+	if !strings.HasSuffix(itemType, "_FOLDER") {
 		return ""
 	}
+	return strings.TrimSuffix(itemType, "_FOLDER")
 }
 
 func (i *Item) GetMemberID() string {
@@ -56,6 +49,9 @@ func (i *Item) GetUSN() int {
 }
 
 func (i *Item) GetTitle() string {
+	if i.Name != "" {
+		return i.Name
+	}
 	t := strField(i.Fields, "title")
 	if t == "" {
 		t = strField(i.Fields, "name")
@@ -75,7 +71,18 @@ func (i *Item) GetParentID() string {
 }
 
 func (i *Item) GetName() string {
+	if i.Name != "" {
+		return i.Name
+	}
 	return strField(i.Fields, "name")
+}
+
+// GetFolderID 取得非資料夾 item 所屬的資料夾 ID（優先 folderID，退回 parentID 向後相容）
+func (i *Item) GetFolderID() string {
+	if v := strField(i.Fields, "folderID"); v != "" {
+		return v
+	}
+	return strField(i.Fields, "parentID")
 }
 
 // strField 從 fields map 取出字串值

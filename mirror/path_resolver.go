@@ -76,7 +76,16 @@ func (r *PathResolver) ResolveFolderPath(folderID string) (string, error) {
 	return result, nil
 }
 
-// ResolveNotePath 解析 Note 在 Vault 中的路徑
+// ResolveItemPath 解析任意 Item 在 Vault 中的路徑（通用方法，回傳 TYPE/.../name.json）
+func (r *PathResolver) ResolveItemPath(itemName string, folderID string) (string, error) {
+	folderPath, err := r.ResolveFolderPath(folderID)
+	if err != nil {
+		return "", fmt.Errorf("resolve item parent: %w", err)
+	}
+	return filepath.Join(folderPath, sanitizeName(itemName)+".json"), nil
+}
+
+// Deprecated: ResolveNotePath 舊版方法，請改用 ResolveItemPath
 func (r *PathResolver) ResolveNotePath(noteTitle string, parentFolderID string) (string, error) {
 	folderPath, err := r.ResolveFolderPath(parentFolderID)
 	if err != nil {
@@ -85,7 +94,7 @@ func (r *PathResolver) ResolveNotePath(noteTitle string, parentFolderID string) 
 	return filepath.Join(folderPath, sanitizeName(noteTitle)+".md"), nil
 }
 
-// ResolveCardPath 解析 Card 在 Vault 中的路徑
+// Deprecated: ResolveCardPath 舊版方法，請改用 ResolveItemPath
 func (r *PathResolver) ResolveCardPath(cardName string, parentFolderID string) (string, error) {
 	folderPath, err := r.ResolveFolderPath(parentFolderID)
 	if err != nil {
@@ -94,7 +103,7 @@ func (r *PathResolver) ResolveCardPath(cardName string, parentFolderID string) (
 	return filepath.Join(folderPath, sanitizeName(cardName)+".json"), nil
 }
 
-// ResolveChartPath 解析 Chart 在 Vault 中的路徑
+// Deprecated: ResolveChartPath 舊版方法，請改用 ResolveItemPath
 func (r *PathResolver) ResolveChartPath(chartName string, parentFolderID string) (string, error) {
 	folderPath, err := r.ResolveFolderPath(parentFolderID)
 	if err != nil {
@@ -154,18 +163,12 @@ func (r *PathResolver) invalidateCache() {
 	r.cache = make(map[string]string)
 }
 
-// resolveType 回傳 Folder 的 type 目錄名，空字串預設為 NOTE
+// resolveType 從資料夾子類型取得根目錄名（通用化：任何非空值直接使用，空值預設 NOTE）
 func resolveType(t string) string {
-	switch t {
-	case "CARD":
-		return "CARD"
-	case "CHART":
-		return "CHART"
-	case "TODO":
-		return "TODO"
-	default:
+	if t == "" {
 		return "NOTE"
 	}
+	return t
 }
 
 // sanitizeName 將不安全的檔名字元替換為底線
