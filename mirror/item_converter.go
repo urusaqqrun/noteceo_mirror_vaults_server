@@ -130,6 +130,24 @@ func ItemToChartMeta(item *model.Item) CardMeta {
 	}
 }
 
+// ItemToMirrorData 將 model.Item 轉換為 ItemMirrorData（新 JSON 鏡像格式）
+func ItemToMirrorData(item *model.Item) ItemMirrorData {
+	name := item.GetName()
+	if name == "" {
+		name = "untitled_" + item.ID
+	}
+	fields := item.Fields
+	if fields == nil {
+		fields = make(map[string]interface{})
+	}
+	return ItemMirrorData{
+		ID:       item.ID,
+		Name:     name,
+		ItemType: item.Type,
+		Fields:   fields,
+	}
+}
+
 // ItemFolderType 回傳 FOLDER item 的子類型（NOTE/CARD/CHART），用於 PathResolver。
 // 優先從 itemType（NOTE_FOLDER→NOTE）推斷，再看 fields.folderType，預設 NOTE。
 func ItemFolderType(item *model.Item) string {

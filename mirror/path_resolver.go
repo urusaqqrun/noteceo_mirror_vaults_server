@@ -171,7 +171,11 @@ func resolveType(t string) string {
 	return t
 }
 
-// sanitizeName 將不安全的檔名字元替換為底線
+// SanitizeItemName 將不安全的檔名字元替換為底線（exported 供其他 package 使用）
+func SanitizeItemName(name string) string {
+	return sanitizeName(name)
+}
+
 func sanitizeName(name string) string {
 	if name == "" {
 		return "_unnamed"

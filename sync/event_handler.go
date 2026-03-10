@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -136,47 +135,27 @@ func (h *SyncEventHandler) handleItemEvent(ctx context.Context, event SyncEvent)
 	}
 	exporter := mirror.NewExporter(h.fs, resolver)
 
-	switch {
-	case model.IsFolder(item.Type):
-		meta := mirror.ItemToFolderMeta(item)
-		if err := exporter.ExportFolder(event.UserID, meta); err != nil {
-			return err
-		}
-		if p, err := resolver.ResolveFolderPath(meta.ID); err == nil {
-			h.setDocPath(event.UserID, meta.ID, filepath.Join(event.UserID, p), true)
-		}
-		return nil
-	case item.Type == model.ItemTypeNote || item.Type == model.ItemTypeTodo:
-		meta, content := mirror.ItemToNoteMeta(item)
-		if err := exporter.ExportNote(event.UserID, meta, content); err != nil {
-			return err
-		}
-		if p, err := resolver.ResolveNotePath(meta.Title, meta.ParentID); err == nil {
-			h.setDocPath(event.UserID, meta.ID, filepath.Join(event.UserID, p), false)
-		}
-		return nil
-	case item.Type == model.ItemTypeCard:
-		meta := mirror.ItemToCardMeta(item)
-		if err := exporter.ExportCard(event.UserID, meta); err != nil {
-			return err
-		}
-		if p, err := resolver.ResolveCardPath(meta.Name, meta.ParentID); err == nil {
-			h.setDocPath(event.UserID, meta.ID, filepath.Join(event.UserID, p), false)
-		}
-		return nil
-	case item.Type == model.ItemTypeChart:
-		meta := mirror.ItemToChartMeta(item)
-		if err := exporter.ExportChart(event.UserID, meta); err != nil {
-			return err
-		}
-		if p, err := resolver.ResolveChartPath(meta.Name, meta.ParentID); err == nil {
-			h.setDocPath(event.UserID, meta.ID, filepath.Join(event.UserID, p), false)
-		}
-		return nil
-	default:
-		log.Printf("[handleItemEvent] unknown itemType %q for %s", item.Type, event.DocID)
-		return nil
+	if err := exporter.ExportItem(event.UserID, item); err != nil {
+		return err
 	}
+
+	// 更新 docPathIndex
+	isFolder := model.IsFolder(item.Type)
+	if isFolder {
+		if p, err := resolver.ResolveFolderPath(item.ID); err == nil {
+			h.setDocPath(event.UserID, item.ID, filepath.Join(event.UserID, p), true)
+		}
+	} else {
+		folderID := item.GetFolderID()
+		if p, err := resolver.ResolveFolderPath(folderID); err == nil {
+			name := item.GetName()
+			if name == "" {
+				name = "untitled_" + item.ID
+			}
+			h.setDocPath(event.UserID, item.ID, filepath.Join(event.UserID, p, mirror.SanitizeItemName(name)+".json"), false)
+		}
+	}
+	return nil
 }
 
 // deleteItemByDocID 刪除 item 對應的 EFS 檔案（先查索引，找不到才全量掃描）
@@ -386,6 +365,16 @@ func (h *SyncEventHandler) rebuildDocPathIndex(ctx context.Context, userID strin
 			return nil
 		}
 		if strings.HasSuffix(path, ".json") {
+			// 優先嘗試新格式（含 itemType）
+			if mirrorItem, err := mirror.MirrorJSONToItem(data); err == nil {
+				if model.IsFolder(mirrorItem.ItemType) {
+					next[mirrorItem.ID] = docPathEntry{path: filepath.Dir(path), isFolder: true}
+				} else {
+					next[mirrorItem.ID] = docPathEntry{path: path, isFolder: false}
+				}
+				return nil
+			}
+			// 退回舊格式
 			var card map[string]any
 			if jErr := json.Unmarshal(data, &card); jErr == nil {
 				if id, ok := card["id"].(string); ok && id != "" {

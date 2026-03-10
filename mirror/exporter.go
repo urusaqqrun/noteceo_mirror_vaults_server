@@ -121,7 +121,128 @@ func (e *Exporter) ExportChart(userId string, meta CardMeta) error {
 	return nil
 }
 
-// DeleteFolder 刪除 Folder 對應的整個目錄
+// ExportItem 通用匯出：將任意 Item 寫為 name.json（資料夾會先建目錄）
+func (e *Exporter) ExportItem(userId string, item *model.Item) error {
+	mirrorData := ItemToMirrorData(item)
+
+	if model.IsFolder(item.Type) {
+		return e.exportFolderItem(userId, mirrorData)
+	}
+	return e.exportLeafItem(userId, mirrorData, item)
+}
+
+// exportFolderItem 匯出資料夾類型：建目錄 + 寫 name.json
+func (e *Exporter) exportFolderItem(userId string, data ItemMirrorData) error {
+	folderPath, err := e.resolver.ResolveFolderPath(data.ID)
+	if err != nil {
+		return fmt.Errorf("resolve folder path: %w", err)
+	}
+
+	fullDirPath := filepath.Join(userId, folderPath)
+	e.cleanupOldFolderPath(userId, data.ID, fullDirPath)
+	if err := e.fs.MkdirAll(fullDirPath); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+
+	jsonBytes, err := ItemToMirrorJSON(data)
+	if err != nil {
+		return fmt.Errorf("marshal item json: %w", err)
+	}
+
+	jsonPath := filepath.Join(fullDirPath, sanitizeName(data.Name)+".json")
+	if err := e.fs.WriteFile(jsonPath, jsonBytes); err != nil {
+		return err
+	}
+	e.setIndexedPath(userId, data.ID, fullDirPath)
+	return nil
+}
+
+// exportLeafItem 匯出非資料夾類型：寫 name.json 到所屬資料夾
+func (e *Exporter) exportLeafItem(userId string, data ItemMirrorData, item *model.Item) error {
+	folderID := item.GetFolderID()
+	folderPath, err := e.resolver.ResolveFolderPath(folderID)
+	if err != nil {
+		return fmt.Errorf("resolve parent folder: %w", err)
+	}
+
+	fileName := sanitizeName(data.Name) + ".json"
+	fullPath := filepath.Join(userId, folderPath, fileName)
+
+	// 檔名衝突處理：同路徑已存在且 ID 不同 → 加 ID 後綴
+	fullPath = e.resolveCollision(fullPath, data.ID)
+
+	e.cleanupOldItemPath(userId, data.ID, fullPath)
+
+	jsonBytes, err := ItemToMirrorJSON(data)
+	if err != nil {
+		return fmt.Errorf("marshal item json: %w", err)
+	}
+
+	if err := e.fs.WriteFile(fullPath, jsonBytes); err != nil {
+		return err
+	}
+	e.setIndexedPath(userId, data.ID, fullPath)
+	return nil
+}
+
+// resolveCollision 若目標路徑已被不同 ID 佔用，加 _{id後8碼} 後綴
+func (e *Exporter) resolveCollision(targetPath, itemID string) string {
+	if !e.fs.Exists(targetPath) {
+		return targetPath
+	}
+	existing, err := e.fs.ReadFile(targetPath)
+	if err != nil {
+		return targetPath
+	}
+	parsed, err := MirrorJSONToItem(existing)
+	if err != nil || parsed.ID == itemID {
+		return targetPath
+	}
+	ext := filepath.Ext(targetPath)
+	base := strings.TrimSuffix(targetPath, ext)
+	suffix := itemID
+	if len(suffix) > 8 {
+		suffix = suffix[len(suffix)-8:]
+	}
+	return base + "_" + suffix + ext
+}
+
+// cleanupOldItemPath 清理同 ID 但舊位置的檔案（改名/搬移情境）
+func (e *Exporter) cleanupOldItemPath(userID, docID, newPath string) {
+	e.ensureDocPathIndex(userID)
+	oldPath := e.getIndexedPath(userID, docID)
+	if oldPath != "" && oldPath != newPath {
+		_ = e.fs.Remove(oldPath)
+	}
+}
+
+// DeleteItem 通用刪除：根據 docPathIndex 找到路徑後刪除
+func (e *Exporter) DeleteItem(userId, itemID string) error {
+	e.ensureDocPathIndex(userId)
+	oldPath := e.getIndexedPath(userId, itemID)
+	if oldPath == "" {
+		return nil
+	}
+	// 判斷是檔案還是目錄
+	info, err := e.fs.Stat(oldPath)
+	if err != nil {
+		e.removeIndexedPath(userId, itemID)
+		return nil
+	}
+	if info.IsDir() {
+		if err := e.fs.RemoveAll(oldPath); err != nil {
+			return err
+		}
+	} else {
+		if err := e.fs.Remove(oldPath); err != nil {
+			return err
+		}
+	}
+	e.removeIndexedPath(userId, itemID)
+	return nil
+}
+
+// Deprecated: DeleteFolder 舊版方法，請改用 DeleteItem
 func (e *Exporter) DeleteFolder(userId string, folderID string) error {
 	folderPath, err := e.resolver.ResolveFolderPath(folderID)
 	if err != nil {
@@ -165,6 +286,7 @@ type ExportBatchEntry struct {
 	NoteMeta   *NoteMeta
 	NoteHTML   string
 	CardMeta   *CardMeta
+	Item       *model.Item // 新格式：通用 Item 匯出
 }
 
 // ExportBatch 使用 errgroup 並行寫入多個檔案到 EFS（上限 8 goroutines）
@@ -174,6 +296,11 @@ func (e *Exporter) ExportBatch(userId string, entries []ExportBatchEntry) error 
 	for _, entry := range entries {
 		entry := entry
 		g.Go(func() error {
+			// 新格式優先
+			if entry.Item != nil {
+				return e.ExportItem(userId, entry.Item)
+			}
+			// 舊格式相容
 			switch {
 			case model.IsFolder(entry.ItemType):
 				if entry.FolderMeta == nil {
@@ -294,6 +421,16 @@ func (e *Exporter) ensureDocPathIndex(userID string) {
 			return nil
 		}
 		if strings.HasSuffix(path, ".json") {
+			// 優先嘗試新格式（含 itemType）
+			if mirrorItem, err := MirrorJSONToItem(data); err == nil {
+				if model.IsFolder(mirrorItem.ItemType) {
+					next[mirrorItem.ID] = filepath.Dir(path)
+				} else {
+					next[mirrorItem.ID] = path
+				}
+				return nil
+			}
+			// 退回舊格式
 			var payload map[string]interface{}
 			if uErr := json.Unmarshal(data, &payload); uErr == nil {
 				if id, ok := payload["id"].(string); ok && id != "" {

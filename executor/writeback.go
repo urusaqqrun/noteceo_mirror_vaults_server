@@ -139,6 +139,9 @@ func resolveDocID(e mirror.ImportEntry) string {
 	if e.DocID != "" {
 		return e.DocID
 	}
+	if e.ItemData != nil {
+		return e.ItemData.ID
+	}
 	switch e.Collection {
 	case "item":
 		if e.FolderMeta != nil {
@@ -225,6 +228,8 @@ func upsertEntry(ctx context.Context, w DataWriter, userID string, e mirror.Impo
 func upsertItemEntry(ctx context.Context, w DataWriter, userID string, e mirror.ImportEntry, newUSN int) error {
 	var doc bson.M
 	switch {
+	case e.ItemData != nil:
+		doc = itemDataToItemBson(e.ItemData, newUSN)
 	case e.FolderMeta != nil:
 		doc = folderMetaToItemBson(e.FolderMeta, e.ItemType, newUSN)
 	case e.NoteMeta != nil:
@@ -437,6 +442,25 @@ func cardMetaToItemBson(m *mirror.CardMeta, itemType string, usn int) bson.M {
 	}
 }
 
+// itemDataToItemBson 將新格式 ItemMirrorData 轉為 Item collection 的 bson.M
+func itemDataToItemBson(d *mirror.ItemMirrorData, usn int) bson.M {
+	fields := bson.M{}
+	for k, v := range d.Fields {
+		fields[k] = v
+	}
+	if usn > 0 {
+		fields["usn"] = usn
+	}
+	fields["updatedAt"] = time.Now().UnixMilli()
+	doc := bson.M{
+		"_id":      d.ID,
+		"name":     d.Name,
+		"itemType": d.ItemType,
+		"fields":   fields,
+	}
+	return doc
+}
+
 // ensureDocID 確保 BSON doc 有 _id；AI 新建的文件可能沒有 ID，自動生成 ObjectID
 func ensureDocID(doc bson.M, action mirror.ImportAction) {
 	if action != mirror.ImportActionCreate {
@@ -461,26 +485,30 @@ func parseTimestamp(s string) interface{} {
 func deleteEntry(ctx context.Context, w DataWriter, userID string, e mirror.ImportEntry, usn int) error {
 	docID := e.DocID
 	if docID == "" {
-		switch e.Collection {
-		case "item":
-			if e.FolderMeta != nil {
-				docID = e.FolderMeta.ID
-			} else if e.NoteMeta != nil {
-				docID = e.NoteMeta.ID
-			} else if e.CardMeta != nil {
-				docID = e.CardMeta.ID
-			}
-		case "folder":
-			if e.FolderMeta != nil {
-				docID = e.FolderMeta.ID
-			}
-		case "note":
-			if e.NoteMeta != nil {
-				docID = e.NoteMeta.ID
-			}
-		case "card", "chart":
-			if e.CardMeta != nil {
-				docID = e.CardMeta.ID
+		if e.ItemData != nil {
+			docID = e.ItemData.ID
+		} else {
+			switch e.Collection {
+			case "item":
+				if e.FolderMeta != nil {
+					docID = e.FolderMeta.ID
+				} else if e.NoteMeta != nil {
+					docID = e.NoteMeta.ID
+				} else if e.CardMeta != nil {
+					docID = e.CardMeta.ID
+				}
+			case "folder":
+				if e.FolderMeta != nil {
+					docID = e.FolderMeta.ID
+				}
+			case "note":
+				if e.NoteMeta != nil {
+					docID = e.NoteMeta.ID
+				}
+			case "card", "chart":
+				if e.CardMeta != nil {
+					docID = e.CardMeta.ID
+				}
 			}
 		}
 	}

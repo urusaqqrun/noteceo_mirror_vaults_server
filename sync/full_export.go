@@ -33,47 +33,24 @@ func ExportFullVault(ctx context.Context, fs mirror.VaultFS, reader FullExporter
 		return fmt.Errorf("list all items: %w", err)
 	}
 
-	var folderCount, noteCount, cardCount, chartCount, skippedCount int
+	var itemCount, skippedCount int
 	for _, item := range allItems {
 		if item == nil {
 			continue
 		}
-		switch {
-		case model.IsFolder(item.Type):
-			meta := mirror.ItemToFolderMeta(item)
-			if err := exporter.ExportFolder(userID, meta); err != nil {
-				log.Printf("[FullExport] folder %s error: %v", item.ID, err)
-			}
-			folderCount++
-		case item.Type == model.ItemTypeNote || item.Type == model.ItemTypeTodo:
-			meta, content := mirror.ItemToNoteMeta(item)
-			if err := exporter.ExportNote(userID, meta, content); err != nil {
-				log.Printf("[FullExport] note %s error: %v", item.ID, err)
-			}
-			noteCount++
-		case item.Type == model.ItemTypeCard:
-			meta := mirror.ItemToCardMeta(item)
-			if err := exporter.ExportCard(userID, meta); err != nil {
-				log.Printf("[FullExport] card %s error: %v", item.ID, err)
-			}
-			cardCount++
-		case item.Type == model.ItemTypeChart:
-			meta := mirror.ItemToChartMeta(item)
-			if err := exporter.ExportChart(userID, meta); err != nil {
-				log.Printf("[FullExport] chart %s error: %v", item.ID, err)
-			}
-			chartCount++
-		default:
-			log.Printf("[FullExport] skip unknown itemType %q for %s", item.Type, item.ID)
+		if err := exporter.ExportItem(userID, item); err != nil {
+			log.Printf("[FullExport] %s %s error: %v", item.Type, item.ID, err)
 			skippedCount++
+			continue
 		}
+		itemCount++
 	}
 
 	claudeMD := buildClaudeMD()
 	fs.WriteFile(userID+"/CLAUDE.md", []byte(claudeMD))
 
-	log.Printf("[FullExport] 用戶 %s 匯出完成: %d folders, %d notes, %d cards, %d charts (skipped: %d)",
-		userID, folderCount, noteCount, cardCount, chartCount, skippedCount)
+	log.Printf("[FullExport] 用戶 %s 匯出完成: %d items (skipped: %d)",
+		userID, itemCount, skippedCount)
 	return nil
 }
 

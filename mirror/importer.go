@@ -34,6 +34,9 @@ type ImportEntry struct {
 	NoteBody   string // Markdown 原文（不含 frontmatter）
 	CardMeta   *CardMeta
 	HTMLHash   string // frontmatter 中的 htmlHash
+
+	// 新格式：通用 Item JSON
+	ItemData *ItemMirrorData
 }
 
 // Importer 負責 Vault 檔案 → MongoDB 資料的匯入
@@ -104,6 +107,26 @@ func (imp *Importer) parseFile(userId, path string, action ImportAction) (Import
 		return ImportEntry{}, fmt.Errorf("read %s: %w", fullPath, err)
 	}
 
+	// 優先嘗試新格式（含 id + itemType 的 JSON）
+	if strings.HasSuffix(path, ".json") && !strings.HasSuffix(path, "_folder.json") {
+		if mirrorItem, err := MirrorJSONToItem(data); err == nil {
+			entry := ImportEntry{
+				Action:     action,
+				Collection: "item",
+				ItemType:   mirrorItem.ItemType,
+				Path:       path,
+				DocID:      mirrorItem.ID,
+				ItemData:   mirrorItem,
+			}
+			// vault fallback name 不回寫到 DB
+			if IsVaultFallbackName(mirrorItem.Name, mirrorItem.ID) {
+				mirrorItem.Name = ""
+			}
+			return entry, nil
+		}
+	}
+
+	// 舊格式
 	itemType := detectItemType(path)
 	entry := ImportEntry{
 		Action:     action,
@@ -157,16 +180,20 @@ func detectItemType(path string) string {
 		return "NOTE"
 	}
 
-	switch strings.ToUpper(parts[0]) {
+	rootDir := strings.ToUpper(parts[0])
+	switch rootDir {
 	case "CARD":
 		return "CARD"
 	case "CHART":
 		return "CHART"
 	case "TODO":
 		return "TODO"
+	case "NOTE":
+		return "NOTE"
 	default:
+		// 新格式：根目錄名稱即為 itemType（KANBAN → KANBAN）
 		if strings.HasSuffix(path, ".json") {
-			return "CARD"
+			return rootDir
 		}
 		return "NOTE"
 	}

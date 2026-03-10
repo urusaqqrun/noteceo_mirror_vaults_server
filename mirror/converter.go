@@ -208,3 +208,35 @@ func computeHash(content string) string {
 	h := sha256.Sum256([]byte(content))
 	return fmt.Sprintf("%x", h)
 }
+
+// ---- 新格式：統一 JSON 鏡像 ----
+
+// ItemMirrorData 對應 vault 中每個 .json 檔案的內容（完整 Item）
+type ItemMirrorData struct {
+	ID       string                 `json:"id"`
+	Name     string                 `json:"name"`
+	ItemType string                 `json:"itemType"`
+	Fields   map[string]interface{} `json:"fields"`
+}
+
+// ItemToMirrorJSON 將 ItemMirrorData 序列化為格式化 JSON
+func ItemToMirrorJSON(data ItemMirrorData) ([]byte, error) {
+	return json.MarshalIndent(data, "", "  ")
+}
+
+// MirrorJSONToItem 從 .json 反序列化為 ItemMirrorData
+func MirrorJSONToItem(raw []byte) (*ItemMirrorData, error) {
+	var data ItemMirrorData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	if data.ID == "" || data.ItemType == "" {
+		return nil, fmt.Errorf("invalid mirror json: missing id or itemType")
+	}
+	return &data, nil
+}
+
+// IsVaultFallbackName 判斷 name 是否為 vault 自動產生的 fallback（untitled_{id}）
+func IsVaultFallbackName(name, id string) bool {
+	return name == "untitled_"+id
+}

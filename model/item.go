@@ -26,9 +26,9 @@ const (
 	ItemTypeChart      = "CHART"
 )
 
-// IsFolder 判斷 itemType 是否為資料夾類型（通用：任何 _FOLDER 結尾都算）
+// IsFolder 判斷 itemType 是否為資料夾類型（相容舊的 "FOLDER" + 通用 _FOLDER 後綴）
 func IsFolder(itemType string) bool {
-	return strings.HasSuffix(itemType, "_FOLDER")
+	return itemType == "FOLDER" || strings.HasSuffix(itemType, "_FOLDER")
 }
 
 // FolderSubType 從 itemType 取得資料夾子類型（NOTE_FOLDER→"NOTE"，KANBAN_FOLDER→"KANBAN"）
