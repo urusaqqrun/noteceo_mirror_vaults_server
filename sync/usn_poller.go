@@ -83,7 +83,9 @@ func (p *USNPoller) pollAll(ctx context.Context) {
 		go func(uid string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			p.PollUser(ctx, uid)
+			pollCtx, pollCancel := context.WithTimeout(ctx, 15*time.Second)
+			defer pollCancel()
+			p.PollUser(pollCtx, uid)
 		}(userId)
 	}
 	wg.Wait()

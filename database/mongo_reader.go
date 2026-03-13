@@ -9,6 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
@@ -332,16 +333,36 @@ func (m *MongoReader) ListAllItems(ctx context.Context, userID string) ([]*model
 	return out, cur.Err()
 }
 
+// ListActiveUsers 從 User collection 查詢最近 7 天活躍的用戶，避免對 Item collection 做全表 Distinct
 func (m *MongoReader) ListActiveUsers(ctx context.Context) ([]string, error) {
-	res, err := m.itemsCol().Distinct(ctx, "fields.memberID", bson.M{})
+	sevenDaysAgoMs := time.Now().AddDate(0, 0, -7).UnixMilli()
+	filter := bson.M{
+		"lastLoginAt": bson.M{"$gte": sevenDaysAgoMs},
+	}
+	cur, err := m.db.Collection("User").Find(ctx, filter,
+		options.Find().SetProjection(bson.M{"_id": 1}),
+	)
 	if err != nil {
 		return nil, err
 	}
-	users := make([]string, 0, len(res))
-	for _, v := range res {
-		if s, ok := v.(string); ok && s != "" {
-			users = append(users, s)
+	defer cur.Close(ctx)
+
+	var users []string
+	for cur.Next(ctx) {
+		var row struct {
+			ID interface{} `bson:"_id"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			continue
+		}
+		switch v := row.ID.(type) {
+		case string:
+			if v != "" {
+				users = append(users, v)
+			}
+		case primitive.ObjectID:
+			users = append(users, v.Hex())
 		}
 	}
-	return users, nil
+	return users, cur.Err()
 }

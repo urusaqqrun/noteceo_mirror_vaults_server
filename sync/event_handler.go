@@ -75,9 +75,40 @@ func NewSyncEventHandler(fs mirror.VaultFS, reader DataReader) *SyncEventHandler
 	}
 }
 
+// StartCacheEvictor 啟動定期清理過期快取的背景 goroutine，ctx 結束時自動停止
+func (h *SyncEventHandler) StartCacheEvictor(ctx context.Context) {
+	go h.evictExpiredCaches(ctx)
+}
+
 // SetLocker 設定 VaultLocker（在 main.go 組裝時呼叫）
 func (h *SyncEventHandler) SetLocker(locker VaultLocker) {
 	h.locker = locker
+}
+
+// evictExpiredCaches 定期清理過期的 resolverCache 和 docPathIndex，防止記憶體洩漏
+func (h *SyncEventHandler) evictExpiredCaches(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			h.mu.Lock()
+			for uid, entry := range h.resolverCache {
+				if now.After(entry.expiresAt) {
+					delete(h.resolverCache, uid)
+				}
+			}
+			for uid, entry := range h.docPathIndex {
+				if now.After(entry.expiresAt) {
+					delete(h.docPathIndex, uid)
+				}
+			}
+			h.mu.Unlock()
+		}
+	}
 }
 
 func (h *SyncEventHandler) HandleEvent(ctx context.Context, event SyncEvent) error {

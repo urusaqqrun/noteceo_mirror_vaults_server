@@ -69,6 +69,7 @@ func main() {
 	var dataWriter executor.DataWriter
 	var docUSNReader executor.USNReader
 	var usnInc executor.USNIncrementer
+	var usnSyncer executor.USNSyncer
 	var latUSN latestUSNReader
 	var fullExp vaultsync.FullExporter
 	if mongoReader != nil {
@@ -76,6 +77,7 @@ func main() {
 		dataWriter = mongoReader
 		docUSNReader = mongoReader
 		usnInc = mongoReader
+		usnSyncer = mongoReader
 		latUSN = mongoReader
 		fullExp = mongoReader
 	}
@@ -87,6 +89,7 @@ func main() {
 		writer:       dataWriter,
 		usnReader:    docUSNReader,
 		usnInc:       usnInc,
+		usnSyncer:    usnSyncer,
 		latestUSN:    latUSN,
 		fullExporter: fullExp,
 		ctx:          ctx,
@@ -111,10 +114,13 @@ func main() {
 	// 背景工作使用 errgroup 管理，確保 graceful shutdown 時等待完成
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Redis Streams consumer
+	// Redis Streams consumer（以 hostname 作為 consumer name，支援多實例部署）
 	eventHandler := vaultsync.NewSyncEventHandler(vaultFS, dataReader)
 	eventHandler.SetLocker(vaultLock)
-	consumer := vaultsync.NewConsumer(rdb, eventHandler, "mirror-1")
+	eventHandler.StartCacheEvictor(ctx)
+	consumerName := "mirror-" + getHostname()
+	consumer := vaultsync.NewConsumer(rdb, eventHandler, consumerName)
+	log.Printf("Redis consumer name: %s", consumerName)
 	g.Go(func() error {
 		if err := consumer.Start(gCtx); err != nil && gCtx.Err() == nil {
 			return fmt.Errorf("consumer: %w", err)
@@ -140,6 +146,7 @@ func main() {
 			time.Duration(cfg.USNPollIntervalSec)*time.Second,
 			activeUsersFn,
 		)
+		taskExec.poller = poller
 		g.Go(func() error {
 			poller.Start(gCtx)
 			return nil
@@ -182,8 +189,8 @@ func initRedis(uri string) *redis.Client {
 		log.Printf("Redis URI 解析失敗，使用預設: %v", err)
 		opt = &redis.Options{Addr: uri}
 	}
-	opt.PoolSize = 5
-	opt.MinIdleConns = 1
+	opt.PoolSize = 15
+	opt.MinIdleConns = 3
 
 	rdb := redis.NewClient(opt)
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
@@ -208,8 +215,10 @@ type fullTaskExecutor struct {
 	writer       executor.DataWriter
 	usnReader    executor.USNReader
 	usnInc       executor.USNIncrementer
+	usnSyncer    executor.USNSyncer
 	latestUSN    latestUSNReader
 	fullExporter vaultsync.FullExporter
+	poller       *vaultsync.USNPoller
 	ctx          context.Context
 }
 
@@ -288,6 +297,25 @@ func (e *fullTaskExecutor) Execute(task *api.Task) error {
 		result := executor.WriteBack(execCtx, e.writer, e.usnReader, e.usnInc, task.UserID, entries, aiStartUSN)
 		log.Printf("[Task %s] writeback: created=%d updated=%d moved=%d deleted=%d skipped=%d errors=%d",
 			task.ID, result.Created, result.Updated, result.Moved, result.Deleted, result.Skipped, result.Errors)
+
+		totalOps := result.Created + result.Updated + result.Moved + result.Deleted
+		if result.Errors > 0 && totalOps == 0 {
+			return fmt.Errorf("writeback failed: all %d entries had errors", result.Errors)
+		}
+
+		// 回寫完成後立即同步 USN 到 MongoDB，不依賴 golang_service 的 SyncWorker
+		if e.usnSyncer != nil {
+			if syncErr := e.usnSyncer.SyncUserUSN(execCtx, task.UserID); syncErr != nil {
+				log.Printf("[Task %s] SyncUserUSN error: %v", task.ID, syncErr)
+			}
+		}
+
+		// 推進 USN Poller 的 lastUSN，避免回寫的資料被 poller 重複導出
+		if e.poller != nil && e.latestUSN != nil {
+			if latestUSN, err := e.latestUSN.GetLatestUSN(execCtx, task.UserID); err == nil {
+				e.poller.SetLastUSN(task.UserID, latestUSN)
+			}
+		}
 	}
 
 	return nil
@@ -333,4 +361,12 @@ func (n *noopDataReader) ListItemFolders(ctx context.Context, userID string) ([]
 }
 func (n *noopDataReader) ListAllItems(ctx context.Context, userID string) ([]*model.Item, error) {
 	return []*model.Item{}, nil
+}
+
+func getHostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return fmt.Sprintf("unknown-%d", time.Now().UnixNano()%10000)
+	}
+	return h
 }

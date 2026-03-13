@@ -192,6 +192,22 @@ func (m *MongoReader) writeDeletionLog(ctx context.Context, userID, collection, 
 	}
 }
 
+// incrIfExists 原子性快速路徑：key 存在才 INCR，不存在回傳 -1（避免意外建立 key）
+var incrIfExists = redis.NewScript(`
+	if redis.call("EXISTS", KEYS[1]) == 1 then
+		return redis.call("INCR", KEYS[1])
+	end
+	return -1
+`)
+
+// initAndIncrUSN 原子化初始化 + INCR：若 key 不存在則先以 baseUSN 初始化再 INCR
+var initAndIncrUSN = redis.NewScript(`
+	if redis.call("EXISTS", KEYS[1]) == 0 then
+		redis.call("SET", KEYS[1], ARGV[1])
+	end
+	return redis.call("INCR", KEYS[1])
+`)
+
 // IncrementUSN 遞增用戶 USN，使用 Redis INCR 搭配 MongoDB fallback。
 // Redis key 格式 usn:{memberID} 與 noteceo_golang_service 共用。
 func (m *MongoReader) IncrementUSN(ctx context.Context, userID string) (int, error) {
@@ -204,29 +220,52 @@ func (m *MongoReader) IncrementUSN(ctx context.Context, userID string) (int, err
 func (m *MongoReader) incrementUSNViaRedis(ctx context.Context, userID string) (int, error) {
 	key := "usn:" + userID
 
-	// 只在 key 不存在時做一次 SetNX 初始化，避免 EXISTS -> SetNX 的 TOCTOU。
-	if _, err := m.rdb.Get(ctx, key).Result(); err == redis.Nil {
-		baseUSN, baseErr := m.getUserUSNFromMongo(ctx, userID)
-		if baseErr != nil {
-			baseUSN = 0
-		}
-		if _, setErr := m.rdb.SetNX(ctx, key, baseUSN, 0).Result(); setErr != nil {
-			log.Printf("Redis SetNX 初始化 USN 失敗（忽略，繼續 INCR）: %v", setErr)
-		}
-	} else if err != nil {
-		log.Printf("Redis GET USN 失敗（忽略，繼續 INCR）: %v", err)
+	// 快速路徑：原子性檢查 key 存在才 INCR，不存在回傳 -1
+	result, err := incrIfExists.Run(ctx, m.rdb, []string{key}).Int64()
+	if err == nil && result > 0 {
+		m.rdb.SAdd(ctx, "usn:dirty", userID)
+		return int(result), nil
 	}
 
-	newUSN, err := m.rdb.Incr(ctx, key).Result()
+	// 慢路徑：key 不存在，查 MongoDB 基準值，再用 Lua 原子初始化+INCR
+	baseUSN, _ := m.getUserUSNFromMongo(ctx, userID)
+
+	newUSN, err := initAndIncrUSN.Run(ctx, m.rdb, []string{key}, baseUSN).Int64()
 	if err != nil {
-		log.Printf("Redis INCR 失敗，fallback MongoDB: %v", err)
+		log.Printf("Redis Lua INCR 失敗，fallback MongoDB: %v", err)
 		return m.incrementUSNViaMongo(ctx, userID)
 	}
 
-	// 標記待同步（由 golang_service 的 SyncWorker 寫回 MongoDB）
 	m.rdb.SAdd(ctx, "usn:dirty", userID)
-
 	return int(newUSN), nil
+}
+
+// SyncUserUSN 將 Redis 中的最新 USN 立即同步到 MongoDB User 文件，
+// 不依賴 golang_service 的 SyncWorker。回寫完成後呼叫。
+func (m *MongoReader) SyncUserUSN(ctx context.Context, userID string) error {
+	if m.rdb == nil {
+		return nil
+	}
+	key := "usn:" + userID
+	val, err := m.rdb.Get(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("redis GET %s: %w", key, err)
+	}
+	usn, err := strconv.Atoi(val)
+	if err != nil {
+		return fmt.Errorf("invalid USN value %q: %w", val, err)
+	}
+
+	_, err = m.db.Collection("User").UpdateOne(ctx,
+		buildUserFilter(userID),
+		bson.M{"$max": bson.M{"usn": usn}},
+	)
+	if err != nil {
+		return fmt.Errorf("update User.usn: %w", err)
+	}
+
+	m.rdb.SRem(ctx, "usn:dirty", userID)
+	return nil
 }
 
 func (m *MongoReader) getUserUSNFromMongo(ctx context.Context, userID string) (int, error) {

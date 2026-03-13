@@ -105,8 +105,6 @@ func (c *Consumer) Start(ctx context.Context) error {
 				}
 				if err := c.handler.HandleEvent(ctx, event); err != nil {
 					if errors.Is(err, ErrVaultLocked) {
-						log.Printf("HandleEvent locked (id=%s), keep pending", msg.ID)
-						time.Sleep(200 * time.Millisecond)
 						continue
 					}
 					log.Printf("HandleEvent error (id=%s): %v", msg.ID, err)
@@ -161,8 +159,6 @@ func (c *Consumer) processPending(ctx context.Context) (int, error) {
 		event := parseEvent(msgs[0].Values)
 		if err := c.handler.HandleEvent(ctx, event); err != nil {
 			if errors.Is(err, ErrVaultLocked) {
-				log.Printf("Handle pending event locked (id=%s), keep pending", p.ID)
-				time.Sleep(200 * time.Millisecond)
 				continue
 			}
 			// 非鎖定錯誤：若超過重試上限，dead-letter；否則用 XClaim 讓 RetryCount 增加。

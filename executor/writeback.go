@@ -37,6 +37,11 @@ type USNIncrementer interface {
 	IncrementUSN(ctx context.Context, userID string) (int, error)
 }
 
+// USNSyncer 將 Redis 中的 USN 立即同步到 MongoDB（不依賴外部 SyncWorker）
+type USNSyncer interface {
+	SyncUserUSN(ctx context.Context, userID string) error
+}
+
 // WriteBackResult 回寫統計
 type WriteBackResult struct {
 	Created int
@@ -98,8 +103,18 @@ func WriteBack(ctx context.Context, writer DataWriter, usnReader USNReader, usnI
 					atomic.AddInt64(&deleted, 1)
 				}
 			} else {
-				// 建立/更新/搬移：先寫 DB（不含新 USN），成功後再 INCR 並回寫 USN
-				err = upsertEntry(gCtx, writer, userID, e, 0)
+				// 建立/更新/搬移：先 INCR USN，再帶著正確 USN 一次性 upsert，確保不會出現 USN=0 的幽靈文件
+				newUSN := 0
+				if usnInc != nil {
+					usn, usnErr := usnInc.IncrementUSN(gCtx, userID)
+					if usnErr != nil {
+						log.Printf("[WriteBack] IncrementUSN error: %v", usnErr)
+						atomic.AddInt64(&errors, 1)
+						return nil
+					}
+					newUSN = usn
+				}
+				err = upsertEntry(gCtx, writer, userID, e, newUSN)
 				if err == nil {
 					switch e.Action {
 					case mirror.ImportActionCreate:
@@ -108,20 +123,6 @@ func WriteBack(ctx context.Context, writer DataWriter, usnReader USNReader, usnI
 						atomic.AddInt64(&updated, 1)
 					case mirror.ImportActionMove:
 						atomic.AddInt64(&moved, 1)
-					}
-					if usnInc != nil {
-						usn, usnErr := usnInc.IncrementUSN(gCtx, userID)
-						if usnErr != nil {
-							log.Printf("[WriteBack] IncrementUSN error (post-write): %v", usnErr)
-						} else {
-							docID := resolveDocID(e)
-							if docID != "" {
-								usnDoc := bson.M{"_id": docID, "fields": bson.M{"usn": usn}}
-								if setErr := writer.UpsertItem(gCtx, userID, usnDoc); setErr != nil {
-									log.Printf("[WriteBack] USN update error (%s): %v", docID, setErr)
-								}
-							}
-						}
 					}
 				}
 			}
