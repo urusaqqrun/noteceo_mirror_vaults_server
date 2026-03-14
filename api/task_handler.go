@@ -204,6 +204,9 @@ func (h *TaskHandler) runTask(taskID, userID string) {
 		return
 	}
 	if task.Status == TaskStatusCancelled {
+		if relErr := h.store.ReleaseUserActiveTask(context.Background(), userID, taskID); relErr != nil {
+			log.Printf("[TaskHandler] ReleaseUserActiveTask error (cancelled early): %v", relErr)
+		}
 		h.mu.Unlock()
 		return
 	}

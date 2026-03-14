@@ -99,9 +99,11 @@ func (c *Consumer) Start(ctx context.Context) error {
 				event := parseEvent(msg.Values)
 				// 驗證必要欄位，缺少則 ACK 後跳過
 				if event.UserID == "" || event.DocID == "" {
-					log.Printf("parseEvent 缺少必要欄位 (id=%s): userID=%q docID=%q，ACK 並跳過", msg.ID, event.UserID, event.DocID)
-					c.rdb.XAck(ctx, StreamName, ConsumerGroup, msg.ID)
-					continue
+				log.Printf("parseEvent 缺少必要欄位 (id=%s): userID=%q docID=%q，ACK 並跳過", msg.ID, event.UserID, event.DocID)
+				if ackErr := c.rdb.XAck(ctx, StreamName, ConsumerGroup, msg.ID).Err(); ackErr != nil {
+					log.Printf("XAck error (id=%s): %v", msg.ID, ackErr)
+				}
+				continue
 				}
 				if err := c.handler.HandleEvent(ctx, event); err != nil {
 					if errors.Is(err, ErrVaultLocked) {
@@ -213,7 +215,9 @@ func (c *Consumer) ConsumeOnce(ctx context.Context) ([]SyncEvent, error) {
 		for _, msg := range stream.Messages {
 			event := parseEvent(msg.Values)
 			events = append(events, event)
-			c.rdb.XAck(ctx, StreamName, ConsumerGroup, msg.ID)
+			if err := c.rdb.XAck(ctx, StreamName, ConsumerGroup, msg.ID).Err(); err != nil {
+				log.Printf("[ConsumeOnce] XAck error (id=%s): %v", msg.ID, err)
+			}
 		}
 	}
 	return events, nil
