@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -200,12 +199,6 @@ func upsertEntry(ctx context.Context, w DataWriter, userID string, e mirror.Impo
 		doc := noteMetaToDoc(e.NoteMeta, e.NoteBody)
 		if newUSN > 0 {
 			doc["usn"] = newUSN
-		}
-		if e.Action == mirror.ImportActionMove {
-			newParent := parentFolderFromPath(e.Path)
-			if newParent != "" {
-				doc["parentID"] = newParent
-			}
 		}
 		ensureDocID(doc, e.Action)
 		return w.UpsertNote(ctx, userID, doc)
@@ -713,7 +706,3 @@ func chartMetaToDoc(m *mirror.CardMeta) Doc {
 	return doc
 }
 
-func parentFolderFromPath(path string) string {
-	_ = strings.Split(path, "/")
-	return ""
-}

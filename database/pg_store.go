@@ -68,7 +68,7 @@ func (s *PgStore) ListItemFolders(ctx context.Context, userID string) ([]*model.
 		`SELECT id, item_type, name, fields, version, owner_id, created_at, updated_at
 		 FROM base_items
 		 WHERE owner_id = $1 AND deleted_at IS NULL
-		 AND (item_type = 'FOLDER' OR item_type LIKE '%_FOLDER')`,
+		 AND (item_type = 'FOLDER' OR item_type LIKE '%\_FOLDER' ESCAPE '\')`,
 		userID,
 	)
 	if err != nil {
@@ -320,7 +320,7 @@ func (s *PgStore) DeleteDocument(ctx context.Context, userID, collection, docID 
 func (s *PgStore) GetDocUSN(ctx context.Context, userID, collection, docID string) (int, error) {
 	var version int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT version FROM base_items WHERE id = $1 AND owner_id = $2`,
+		`SELECT version FROM base_items WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL`,
 		docID, userID,
 	).Scan(&version)
 	if err == sql.ErrNoRows {
@@ -360,7 +360,9 @@ func (s *PgStore) IncrementUSN(ctx context.Context, userID string) (int, error) 
 
 	result, err := incrIfExists.Run(ctx, s.rdb, []string{key}).Int64()
 	if err == nil && result > 0 {
-		s.rdb.SAdd(ctx, "usn:dirty", userID)
+		if sErr := s.rdb.SAdd(ctx, "usn:dirty", userID).Err(); sErr != nil {
+			log.Printf("[PgStore] SAdd usn:dirty 失敗: %v", sErr)
+		}
 		return int(result), nil
 	}
 
@@ -373,7 +375,9 @@ func (s *PgStore) IncrementUSN(ctx context.Context, userID string) (int, error) 
 		return s.incrementUSNViaPG(ctx, userID)
 	}
 
-	s.rdb.SAdd(ctx, "usn:dirty", userID)
+	if sErr := s.rdb.SAdd(ctx, "usn:dirty", userID).Err(); sErr != nil {
+		log.Printf("[PgStore] SAdd usn:dirty 失敗: %v", sErr)
+	}
 	return int(newUSN), nil
 }
 
@@ -390,8 +394,31 @@ func (s *PgStore) getMaxVersionFromPG(ctx context.Context, userID string) int {
 }
 
 func (s *PgStore) incrementUSNViaPG(ctx context.Context, userID string) (int, error) {
-	maxVer := s.getMaxVersionFromPG(ctx, userID)
-	return maxVer + 1, nil
+	// 使用交易 + SELECT FOR UPDATE 風格的 advisory lock 確保原子遞增
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx for USN incr: %w", err)
+	}
+	defer tx.Rollback()
+
+	var maxVer sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(version), 0) FROM base_items WHERE owner_id = $1 FOR UPDATE`,
+		userID,
+	).Scan(&maxVer)
+	if err != nil {
+		return 0, fmt.Errorf("select max version for update: %w", err)
+	}
+
+	newVer := 1
+	if maxVer.Valid {
+		newVer = int(maxVer.Int64) + 1
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit USN incr tx: %w", err)
+	}
+	return newVer, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -407,7 +434,40 @@ func (s *PgStore) SyncUserUSN(ctx context.Context, userID string) error {
 // ---------------------------------------------------------------------------
 
 func (s *PgStore) GetLatestUSN(ctx context.Context, userID string) (int, error) {
-	return s.getMaxVersionFromPG(ctx, userID), nil
+	var maxVer sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(version), 0) FROM base_items WHERE owner_id = $1`,
+		userID,
+	).Scan(&maxVer)
+	if err != nil {
+		return 0, fmt.Errorf("get latest USN: %w", err)
+	}
+	if !maxVer.Valid {
+		return 0, nil
+	}
+	return int(maxVer.Int64), nil
+}
+
+// ---------------------------------------------------------------------------
+// SeqReader 介面（任務回寫後推進 Poller 游標用）
+// ---------------------------------------------------------------------------
+
+// GetLatestSeq 取得該用戶在 sync_changes 中的最大 seq（Poller 追蹤的游標）
+func (s *PgStore) GetLatestSeq(ctx context.Context, userID string) (int, error) {
+	var maxSeq sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(sc.seq) FROM sync_changes sc
+		 JOIN base_items bi ON bi.id = sc.item_id
+		 WHERE bi.owner_id = $1`,
+		userID,
+	).Scan(&maxSeq)
+	if err != nil {
+		return 0, fmt.Errorf("get latest seq: %w", err)
+	}
+	if !maxSeq.Valid {
+		return 0, nil
+	}
+	return int(maxSeq.Int64), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -666,8 +726,9 @@ func toInt(v interface{}) int {
 	case float64:
 		return int(n)
 	case string:
-		if i, err := fmt.Sscanf(n, "%d"); err == nil {
-			return i
+		var parsed int
+		if _, err := fmt.Sscanf(n, "%d", &parsed); err == nil {
+			return parsed
 		}
 		return 0
 	default:

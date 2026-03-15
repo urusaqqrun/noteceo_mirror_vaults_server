@@ -73,6 +73,7 @@ func main() {
 		usnInc:       pgStore,
 		usnSyncer:    pgStore,
 		latestUSN:    pgStore,
+		latestSeq:    pgStore,
 		fullExporter: pgStore,
 		ctx:          ctx,
 	}
@@ -185,6 +186,11 @@ type latestUSNReader interface {
 	GetLatestUSN(ctx context.Context, userID string) (int, error)
 }
 
+// seqReader 查詢 sync_changes 最大 seq（Poller 游標推進用）
+type seqReader interface {
+	GetLatestSeq(ctx context.Context, userID string) (int, error)
+}
+
 // fullTaskExecutor 整合所有執行元件
 type fullTaskExecutor struct {
 	claudeExec   *executor.ClaudeExecutor
@@ -196,6 +202,7 @@ type fullTaskExecutor struct {
 	usnInc       executor.USNIncrementer
 	usnSyncer    executor.USNSyncer
 	latestUSN    latestUSNReader
+	latestSeq    seqReader
 	fullExporter vaultsync.FullExporter
 	poller       *vaultsync.USNPoller
 	ctx          context.Context
@@ -289,10 +296,11 @@ func (e *fullTaskExecutor) Execute(task *api.Task) error {
 			}
 		}
 
-		// 推進 USN Poller 的 lastUSN，避免回寫的資料被 poller 重複導出
-		if e.poller != nil && e.latestUSN != nil {
-			if latestUSN, err := e.latestUSN.GetLatestUSN(execCtx, task.UserID); err == nil {
-				e.poller.SetLastUSN(task.UserID, latestUSN)
+		// 推進 USN Poller 的游標，避免回寫的資料被 poller 重複導出
+		// 使用 sync_changes.seq（Poller 實際追蹤的游標）而非 base_items.version
+		if e.poller != nil && e.latestSeq != nil {
+			if seq, err := e.latestSeq.GetLatestSeq(execCtx, task.UserID); err == nil {
+				e.poller.SetLastUSN(task.UserID, seq)
 			}
 		}
 	}
