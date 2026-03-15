@@ -56,7 +56,8 @@ func (s *PgStore) Close() error {
 
 func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.Item, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, item_type, name, fields, version FROM base_items WHERE id = $1 AND owner_id = $2`,
+		`SELECT id, item_type, name, fields, version, owner_id, created_at, updated_at
+		 FROM base_items WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL`,
 		itemID, userID,
 	)
 	return s.scanItem(row)
@@ -64,7 +65,8 @@ func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.It
 
 func (s *PgStore) ListItemFolders(ctx context.Context, userID string) ([]*model.Item, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, item_type, name, fields, version FROM base_items
+		`SELECT id, item_type, name, fields, version, owner_id, created_at, updated_at
+		 FROM base_items
 		 WHERE owner_id = $1 AND deleted_at IS NULL
 		 AND (item_type = 'FOLDER' OR item_type LIKE '%_FOLDER')`,
 		userID,
@@ -78,7 +80,8 @@ func (s *PgStore) ListItemFolders(ctx context.Context, userID string) ([]*model.
 
 func (s *PgStore) ListAllItems(ctx context.Context, userID string) ([]*model.Item, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, item_type, name, fields, version FROM base_items
+		`SELECT id, item_type, name, fields, version, owner_id, created_at, updated_at
+		 FROM base_items
 		 WHERE owner_id = $1 AND deleted_at IS NULL`,
 		userID,
 	)
@@ -479,9 +482,10 @@ func (s *PgStore) ListActiveUsers(ctx context.Context) ([]string, error) {
 // ---------------------------------------------------------------------------
 
 func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
-	var id, itemType, name, fieldsJSON string
+	var id, itemType, name, fieldsJSON, ownerID string
 	var version int
-	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version); err != nil {
+	var createdAt, updatedAt int64
+	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version, &ownerID, &createdAt, &updatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -492,7 +496,10 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
 		fields = make(map[string]interface{})
 	}
+	fields["memberID"] = ownerID
 	fields["usn"] = version
+	fields["createdAt"] = fmt.Sprintf("%d", createdAt)
+	fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
 
 	return &model.Item{
 		ID:     id,
@@ -505,9 +512,10 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 	var out []*model.Item
 	for rows.Next() {
-		var id, itemType, name, fieldsJSON string
+		var id, itemType, name, fieldsJSON, ownerID string
 		var version int
-		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version); err != nil {
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version, &ownerID, &createdAt, &updatedAt); err != nil {
 			log.Printf("[scanItems] scan error: %v", err)
 			continue
 		}
@@ -515,7 +523,10 @@ func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
 			fields = make(map[string]interface{})
 		}
+		fields["memberID"] = ownerID
 		fields["usn"] = version
+		fields["createdAt"] = fmt.Sprintf("%d", createdAt)
+		fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
 
 		out = append(out, &model.Item{
 			ID:     id,
