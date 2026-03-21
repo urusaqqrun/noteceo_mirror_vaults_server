@@ -56,8 +56,10 @@ func (s *PgStore) Close() error {
 
 func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.Item, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, item_type, name, fields, version, owner_id, created_at, updated_at
-		 FROM base_items WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL`,
+		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at
+		 FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE bi.id = $1 AND ip.user_id = $2 AND bi.deleted_at IS NULL`,
 		itemID, userID,
 	)
 	return s.scanItem(row)
@@ -65,10 +67,11 @@ func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.It
 
 func (s *PgStore) ListItemFolders(ctx context.Context, userID string) ([]*model.Item, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, item_type, name, fields, version, owner_id, created_at, updated_at
-		 FROM base_items
-		 WHERE owner_id = $1 AND deleted_at IS NULL
-		 AND (item_type = 'FOLDER' OR item_type LIKE '%\_FOLDER' ESCAPE '\')`,
+		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at
+		 FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE ip.user_id = $1 AND bi.deleted_at IS NULL
+		 AND (bi.item_type = 'FOLDER' OR bi.item_type LIKE '%\_FOLDER' ESCAPE '\')`,
 		userID,
 	)
 	if err != nil {
@@ -80,9 +83,10 @@ func (s *PgStore) ListItemFolders(ctx context.Context, userID string) ([]*model.
 
 func (s *PgStore) ListAllItems(ctx context.Context, userID string) ([]*model.Item, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, item_type, name, fields, version, owner_id, created_at, updated_at
-		 FROM base_items
-		 WHERE owner_id = $1 AND deleted_at IS NULL`,
+		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at
+		 FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE ip.user_id = $1 AND bi.deleted_at IS NULL`,
 		userID,
 	)
 	if err != nil {
@@ -182,7 +186,7 @@ func (s *PgStore) UpsertItem(ctx context.Context, userID string, doc executor.Do
 		version = toInt(u)
 	}
 	delete(fields, "usn")
-	delete(fields, "memberID")
+	delete(fields, "ownerID")
 
 	now := time.Now().UnixMilli()
 	createdAt := now
@@ -210,18 +214,28 @@ func (s *PgStore) UpsertItem(ctx context.Context, userID string, doc executor.Do
 	defer tx.Rollback()
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO base_items (id, item_type, name, fields, version, owner_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO base_items (id, item_type, name, fields, version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (id) DO UPDATE SET
 		   item_type = EXCLUDED.item_type,
 		   name = EXCLUDED.name,
 		   fields = EXCLUDED.fields,
 		   version = EXCLUDED.version,
 		   updated_at = EXCLUDED.updated_at`,
-		id, itemType, name, string(fieldsJSON), version, userID, createdAt, updatedAt,
+		id, itemType, name, string(fieldsJSON), version, createdAt, updatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert base_items: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO item_permissions (item_id, user_id, permission, created_at, updated_at)
+		 VALUES ($1, $2, 'owner', $3, $4)
+		 ON CONFLICT (item_id, user_id) DO NOTHING`,
+		id, userID, createdAt, updatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert item_permissions: %w", err)
 	}
 
 	_, err = tx.ExecContext(ctx,
@@ -287,7 +301,8 @@ func (s *PgStore) DeleteItemDoc(ctx context.Context, userID, docID string, versi
 
 	result, err := tx.ExecContext(ctx,
 		`UPDATE base_items SET deleted_at = $1, version = $2, updated_at = $1
-		 WHERE id = $3 AND owner_id = $4 AND deleted_at IS NULL`,
+		 WHERE id = $3 AND deleted_at IS NULL
+		 AND EXISTS (SELECT 1 FROM item_permissions WHERE item_id = $3 AND user_id = $4 AND permission = 'owner')`,
 		now, version, docID, userID,
 	)
 	if err != nil {
@@ -320,7 +335,9 @@ func (s *PgStore) DeleteDocument(ctx context.Context, userID, collection, docID 
 func (s *PgStore) GetDocUSN(ctx context.Context, userID, collection, docID string) (int, error) {
 	var version int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT version FROM base_items WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL`,
+		`SELECT bi.version FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE bi.id = $1 AND ip.user_id = $2 AND bi.deleted_at IS NULL`,
 		docID, userID,
 	).Scan(&version)
 	if err == sql.ErrNoRows {
@@ -334,7 +351,7 @@ func (s *PgStore) GetDocUSN(ctx context.Context, userID, collection, docID strin
 
 // ---------------------------------------------------------------------------
 // USNIncrementer 介面（版本號遞增）
-// 使用 Redis INCR 維持與 golang_service 相容的 usn:{memberID} key
+// 使用 Redis INCR 維持與 golang_service 相容的 usn:{ownerID} key
 // ---------------------------------------------------------------------------
 
 var incrIfExists = redis.NewScript(`
@@ -384,7 +401,9 @@ func (s *PgStore) IncrementUSN(ctx context.Context, userID string) (int, error) 
 func (s *PgStore) getMaxVersionFromPG(ctx context.Context, userID string) int {
 	var maxVer sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(version), 0) FROM base_items WHERE owner_id = $1`,
+		`SELECT COALESCE(MAX(bi.version), 0) FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE ip.user_id = $1`,
 		userID,
 	).Scan(&maxVer)
 	if err != nil || !maxVer.Valid {
@@ -410,7 +429,9 @@ func (s *PgStore) incrementUSNViaPG(ctx context.Context, userID string) (int, er
 
 	var maxVer sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(version), 0) FROM base_items WHERE owner_id = $1`,
+		`SELECT COALESCE(MAX(bi.version), 0) FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE ip.user_id = $1`,
 		userID,
 	).Scan(&maxVer)
 	if err != nil {
@@ -443,7 +464,9 @@ func (s *PgStore) SyncUserUSN(ctx context.Context, userID string) error {
 func (s *PgStore) GetLatestUSN(ctx context.Context, userID string) (int, error) {
 	var maxVer sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(version), 0) FROM base_items WHERE owner_id = $1`,
+		`SELECT COALESCE(MAX(bi.version), 0) FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE ip.user_id = $1`,
 		userID,
 	).Scan(&maxVer)
 	if err != nil {
@@ -465,7 +488,8 @@ func (s *PgStore) GetLatestSeq(ctx context.Context, userID string) (int, error) 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT MAX(sc.seq) FROM sync_changes sc
 		 JOIN base_items bi ON bi.id = sc.item_id
-		 WHERE bi.owner_id = $1`,
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE ip.user_id = $1`,
 		userID,
 	).Scan(&maxSeq)
 	if err != nil {
@@ -487,7 +511,8 @@ func (s *PgStore) GetChangesAfterUSN(ctx context.Context, userID string, afterUS
 		`SELECT sc.seq, sc.item_id, sc.change_type
 		 FROM sync_changes sc
 		 JOIN base_items bi ON bi.id = sc.item_id
-		 WHERE sc.seq > $1 AND bi.owner_id = $2
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE sc.seq > $1 AND ip.user_id = $2
 		 ORDER BY sc.seq ASC
 		 LIMIT 100`,
 		afterUSN, userID,
@@ -526,7 +551,9 @@ func (s *PgStore) GetChangesAfterUSN(ctx context.Context, userID string, afterUS
 func (s *PgStore) ListActiveUsers(ctx context.Context) ([]string, error) {
 	sevenDaysAgoMs := time.Now().AddDate(0, 0, -7).UnixMilli()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT owner_id FROM base_items WHERE updated_at > $1`,
+		`SELECT DISTINCT ip.user_id FROM base_items bi
+		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
+		 WHERE bi.updated_at > $1`,
 		sevenDaysAgoMs,
 	)
 	if err != nil {
@@ -549,10 +576,10 @@ func (s *PgStore) ListActiveUsers(ctx context.Context) ([]string, error) {
 // ---------------------------------------------------------------------------
 
 func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
-	var id, itemType, name, fieldsJSON, ownerID string
+	var id, itemType, name, fieldsJSON string
 	var version int
 	var createdAt, updatedAt int64
-	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version, &ownerID, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -563,7 +590,6 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
 		fields = make(map[string]interface{})
 	}
-	fields["memberID"] = ownerID
 	fields["usn"] = version
 	fields["createdAt"] = fmt.Sprintf("%d", createdAt)
 	fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
@@ -579,10 +605,10 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 	var out []*model.Item
 	for rows.Next() {
-		var id, itemType, name, fieldsJSON, ownerID string
+		var id, itemType, name, fieldsJSON string
 		var version int
 		var createdAt, updatedAt int64
-		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version, &ownerID, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt); err != nil {
 			log.Printf("[scanItems] scan error: %v", err)
 			continue
 		}
@@ -590,7 +616,6 @@ func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
 			fields = make(map[string]interface{})
 		}
-		fields["memberID"] = ownerID
 		fields["usn"] = version
 		fields["createdAt"] = fmt.Sprintf("%d", createdAt)
 		fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
@@ -611,9 +636,8 @@ func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 
 func itemToFolder(item *model.Item) *model.Folder {
 	f := &model.Folder{
-		ID:       item.ID,
-		MemberID: model.StrPtrDeref(model.StrPtrField(item.Fields, "memberID")),
-		Usn:      item.GetUSN(),
+		ID:  item.ID,
+		Usn: item.GetUSN(),
 	}
 
 	if n := item.GetName(); n != "" {
@@ -651,9 +675,8 @@ func itemToFolder(item *model.Item) *model.Folder {
 
 func itemToNote(item *model.Item) *model.Note {
 	n := &model.Note{
-		ID:       item.ID,
-		MemberID: model.StrPtrDeref(model.StrPtrField(item.Fields, "memberID")),
-		Title:    model.StrPtrField(item.Fields, "title"),
+		ID:    item.ID,
+		Title: model.StrPtrField(item.Fields, "title"),
 		Content:  model.StrPtrField(item.Fields, "content"),
 		Tags:     model.StringSliceField(item.Fields, "tags"),
 		FolderID: func() string {
@@ -683,9 +706,8 @@ func itemToNote(item *model.Item) *model.Note {
 
 func itemToCard(item *model.Item) *model.Card {
 	return &model.Card{
-		ID:        item.ID,
-		MemberID:  model.StrPtrDeref(model.StrPtrField(item.Fields, "memberID")),
-		ParentID:  func() string { v := model.StrPtrField(item.Fields, "parentID"); if v != nil { return *v }; return "" }(),
+		ID:       item.ID,
+		ParentID: func() string { v := model.StrPtrField(item.Fields, "parentID"); if v != nil { return *v }; return "" }(),
 		Name:      item.GetName(),
 		Fields:    model.StrPtrField(item.Fields, "fields"),
 		Reviews:   model.StrPtrField(item.Fields, "reviews"),
@@ -699,9 +721,8 @@ func itemToCard(item *model.Item) *model.Card {
 
 func itemToChart(item *model.Item) *model.Chart {
 	return &model.Chart{
-		ID:        item.ID,
-		MemberID:  model.StrPtrDeref(model.StrPtrField(item.Fields, "memberID")),
-		ParentID:  func() string { v := model.StrPtrField(item.Fields, "parentID"); if v != nil { return *v }; return "" }(),
+		ID:       item.ID,
+		ParentID: func() string { v := model.StrPtrField(item.Fields, "parentID"); if v != nil { return *v }; return "" }(),
 		Name:      item.GetName(),
 		Data:      model.StrPtrField(item.Fields, "data"),
 		IsDeleted: model.BoolField(item.Fields, "isDeleted"),

@@ -123,7 +123,7 @@ func buildClaudeMD() string {
 
 ## 規則
 
-1. 不要刪除任何 _folder.json 中的 ID、memberID 欄位
+1. 不要刪除任何 _folder.json 中的 ID 欄位
 2. 修改 .md 檔案時保留 frontmatter 的 id 和 parentID
 3. 搬移檔案時更新 frontmatter 中的 parentID
 4. 新建資料夾時必須建立 _folder.json（至少含 folderName 和 type）

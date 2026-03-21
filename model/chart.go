@@ -2,9 +2,8 @@ package model
 
 // Chart 圖表
 type Chart struct {
-	ID        string  `json:"id" bson:"_id,omitempty"`
-	MemberID  string  `json:"memberID" bson:"memberID"`
-	ParentID  string  `json:"parentID" bson:"parentID"`
+	ID       string  `json:"id" bson:"_id,omitempty"`
+	ParentID string  `json:"parentID" bson:"parentID"`
 	Name      string  `json:"name" bson:"name"`
 	Data      *string `json:"data,omitempty" bson:"data,omitempty"`
 	IsDeleted bool    `json:"isDeleted" bson:"isDeleted"`

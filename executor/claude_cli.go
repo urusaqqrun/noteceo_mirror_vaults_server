@@ -136,7 +136,7 @@ func buildClaudeMD(instruction string) string {
 	sb.WriteString("- CARD/  — 卡片（.json 檔案）\n")
 	sb.WriteString("- CHART/ — 圖表（.json 檔案）\n\n")
 	sb.WriteString("規則：\n")
-	sb.WriteString("1. 不要刪除任何 _folder.json 中的 ID、memberID 欄位\n")
+	sb.WriteString("1. 不要刪除任何 _folder.json 中的 ID、ownerID 欄位\n")
 	sb.WriteString("2. 修改 .md 檔案時保留 frontmatter 的 id 和 parentID\n")
 	sb.WriteString("3. 搬移檔案時更新 frontmatter 中的 parentID\n")
 	sb.WriteString("4. 使用 Bash 時只用明確的絕對路徑，不要使用 cd、../ 或 shell 變數組合路徑\n\n")

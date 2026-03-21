@@ -20,8 +20,8 @@ func TestE2E_UserCreatesNote_VaultSync(t *testing.T) {
 
 	// 匯出 Folder
 	noteType := "NOTE"
-	exporter.ExportFolder("user1", FolderMeta{ID: "f1", MemberID: "user1", FolderName: "工作", Type: &noteType})
-	exporter.ExportFolder("user1", FolderMeta{ID: "f2", MemberID: "user1", FolderName: "會議紀錄", Type: &noteType, ParentID: strPtr("f1")})
+	exporter.ExportFolder("user1", FolderMeta{ID: "f1", FolderName: "工作", Type: &noteType})
+	exporter.ExportFolder("user1", FolderMeta{ID: "f2", FolderName: "會議紀錄", Type: &noteType, ParentID: strPtr("f1")})
 
 	// 匯出 Note
 	err := exporter.ExportNote("user1", NoteMeta{
@@ -70,8 +70,8 @@ func TestE2E_AIMoveNote_ParentIDUpdate(t *testing.T) {
 
 	// 初始狀態：Note 在「未分類」
 	noteType := "NOTE"
-	exporter.ExportFolder("user1", FolderMeta{ID: "f1", MemberID: "user1", FolderName: "未分類", Type: &noteType})
-	exporter.ExportFolder("user1", FolderMeta{ID: "f2", MemberID: "user1", FolderName: "工作", Type: &noteType})
+	exporter.ExportFolder("user1", FolderMeta{ID: "f1", FolderName: "未分類", Type: &noteType})
+	exporter.ExportFolder("user1", FolderMeta{ID: "f2", FolderName: "工作", Type: &noteType})
 	exporter.ExportNote("user1", NoteMeta{
 		ID: "n1", ParentID: "f1", Title: "重要筆記", USN: 3,
 		CreatedAt: "1700000000000", UpdatedAt: "1709000000000",
@@ -151,7 +151,7 @@ func TestE2E_BulkSync_100Folders_500Notes(t *testing.T) {
 	noteType := "NOTE"
 	for _, f := range folders {
 		exporter.ExportFolder("user1", FolderMeta{
-			ID: f.ID, MemberID: "user1", FolderName: f.FolderName, Type: &noteType,
+			ID: f.ID, FolderName: f.FolderName, Type: &noteType,
 		})
 	}
 
@@ -288,13 +288,13 @@ func TestE2E_SpecialCharacters_InNames(t *testing.T) {
 	})
 	exporter := NewExporter(fs, resolver)
 	noteType := "NOTE"
-	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f1", MemberID: "user1", FolderName: "工作筆記", Type: &noteType}); err != nil {
+	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f1", FolderName: "工作筆記", Type: &noteType}); err != nil {
 		t.Fatal(err)
 	}
-	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f2", MemberID: "user1", FolderName: "2026/03/08 meeting", Type: &noteType}); err != nil {
+	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f2", FolderName: "2026/03/08 meeting", Type: &noteType}); err != nil {
 		t.Fatal(err)
 	}
-	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f3", MemberID: "user1", FolderName: "", Type: &noteType}); err != nil {
+	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f3", FolderName: "", Type: &noteType}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -469,12 +469,10 @@ func TestE2E_GenericFolderType_Export(t *testing.T) {
 	exporter := NewExporter(fs, resolver)
 
 	folderItem := &model.Item{
-		ID:   "kf1",
-		Name: "看板一",
-		Type: "KANBAN_FOLDER",
-		Fields: map[string]interface{}{
-			"memberID": "u1",
-		},
+		ID:     "kf1",
+		Name:   "看板一",
+		Type:   "KANBAN_FOLDER",
+		Fields: map[string]interface{}{},
 	}
 	result, err := exporter.ExportItem("user1", folderItem)
 	if err != nil {
@@ -495,7 +493,7 @@ func TestE2E_FolderRename_CascadingPaths(t *testing.T) {
 	})
 	exporter := NewExporter(fs, resolver)
 	noteType := "NOTE"
-	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f1", MemberID: "user1", FolderName: "工作", Type: &noteType}); err != nil {
+	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f1", FolderName: "工作", Type: &noteType}); err != nil {
 		t.Fatal(err)
 	}
 	notes := []NoteMeta{
@@ -513,7 +511,7 @@ func TestE2E_FolderRename_CascadingPaths(t *testing.T) {
 	}
 
 	resolver.UpdateFolder(FolderNode{ID: "f1", FolderName: "工作區", Type: "NOTE", ParentID: nil})
-	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f1", MemberID: "user1", FolderName: "工作區", Type: &noteType}); err != nil {
+	if err := exporter.ExportFolder("user1", FolderMeta{ID: "f1", FolderName: "工作區", Type: &noteType}); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range notes {

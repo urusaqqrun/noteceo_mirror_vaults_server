@@ -247,10 +247,9 @@ func upsertItemEntry(ctx context.Context, w DataWriter, userID string, e mirror.
 
 func folderMetaToItemDoc(m *mirror.FolderMeta, itemType string, usn int) Doc {
 	fields := Doc{
-		"memberID": m.MemberID,
-		"name":     m.FolderName,
-		"noteNum":  m.NoteNum,
-		"isTemp":   m.IsTemp,
+		"name":    m.FolderName,
+		"noteNum": m.NoteNum,
+		"isTemp":  m.IsTemp,
 	}
 	if usn > 0 {
 		fields["usn"] = usn

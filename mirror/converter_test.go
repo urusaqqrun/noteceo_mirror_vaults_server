@@ -154,7 +154,6 @@ func TestFolderToJSON_NoteType(t *testing.T) {
 	noteType := "NOTE"
 	data, err := FolderToJSON(FolderMeta{
 		ID:         "f1",
-		MemberID:   "m1",
 		FolderName: "工作筆記",
 		Type:       &noteType,
 		OrderAt:    strPtr("1709000003000"),
@@ -180,7 +179,6 @@ func TestFolderToJSON_CardType(t *testing.T) {
 	fields := []CardFieldMeta{{Name: "書名", Type: "TEXT"}}
 	data, err := FolderToJSON(FolderMeta{
 		ID:         "c1",
-		MemberID:   "m1",
 		FolderName: "讀書卡片",
 		Type:       &cardType,
 		Fields:     fields,
@@ -195,7 +193,7 @@ func TestFolderToJSON_CardType(t *testing.T) {
 }
 
 func TestJSONToFolder_Basic(t *testing.T) {
-	json := `{"ID":"f1","memberID":"m1","folderName":"工作","type":"NOTE","orderAt":"123"}`
+	json := `{"ID":"f1","folderName":"工作","type":"NOTE","orderAt":"123"}`
 	folder, err := JSONToFolder([]byte(json))
 	if err != nil {
 		t.Fatal(err)

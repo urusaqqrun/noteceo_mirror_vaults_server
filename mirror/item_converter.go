@@ -60,7 +60,6 @@ func ItemToFolderMeta(item *model.Item) FolderMeta {
 	}
 	meta := FolderMeta{
 		ID:         item.ID,
-		MemberID:   item.GetMemberID(),
 		FolderName: item.GetName(),
 		Type:       folderType,
 		ParentID:   model.StrPtrField(f, "parentID"),
@@ -99,7 +98,6 @@ func ItemToCardMeta(item *model.Item) CardMeta {
 	f := item.Fields
 	return CardMeta{
 		ID:            item.ID,
-		MemberID:      item.GetMemberID(),
 		ContributorID: model.StrPtrField(f, "contributorId"),
 		ParentID:      item.GetParentID(),
 		Name:          item.GetName(),
@@ -118,9 +116,8 @@ func ItemToCardMeta(item *model.Item) CardMeta {
 func ItemToChartMeta(item *model.Item) CardMeta {
 	f := item.Fields
 	return CardMeta{
-		ID:        item.ID,
-		MemberID:  item.GetMemberID(),
-		ParentID:  item.GetParentID(),
+		ID:       item.ID,
+		ParentID: item.GetParentID(),
 		Name:      item.GetName(),
 		Fields:    model.StrPtrField(f, "data"),
 		OrderAt:   model.StrPtrField(f, "orderAt"),

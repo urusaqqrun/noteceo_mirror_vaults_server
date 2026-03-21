@@ -113,7 +113,7 @@ func TestE2E_FullRoundTrip_ExportDiffImportWriteback(t *testing.T) {
 	exporter := mirror.NewExporter(fs, resolver)
 
 	noteType := "NOTE"
-	if err := exporter.ExportFolder("user1", mirror.FolderMeta{ID: "f-note", MemberID: "user1", FolderName: "工作", Type: &noteType}); err != nil {
+	if err := exporter.ExportFolder("user1", mirror.FolderMeta{ID: "f-note", FolderName: "工作", Type: &noteType}); err != nil {
 		t.Fatal(err)
 	}
 	if err := exporter.ExportNote("user1", mirror.NoteMeta{ID: "n1", ParentID: "f-note", Title: "會議A", USN: 1}, "<p>A</p>"); err != nil {

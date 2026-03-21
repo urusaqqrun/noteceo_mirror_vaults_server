@@ -40,10 +40,6 @@ func FolderSubType(itemType string) string {
 	return strings.TrimSuffix(itemType, "_FOLDER")
 }
 
-func (i *Item) GetMemberID() string {
-	return strField(i.Fields, "memberID")
-}
-
 func (i *Item) GetUSN() int {
 	return intField(i.Fields, "usn")
 }

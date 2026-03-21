@@ -444,7 +444,6 @@ func buildPathResolverFromItems(items []*model.Item) *mirror.PathResolver {
 func toFolderMeta(f *model.Folder) mirror.FolderMeta {
 	meta := mirror.FolderMeta{
 		ID:                  f.ID,
-		MemberID:            f.MemberID,
 		FolderName:          f.FolderName,
 		Type:                f.Type,
 		ParentID:            f.ParentID,
@@ -498,7 +497,7 @@ func toFolderMeta(f *model.Folder) mirror.FolderMeta {
 			continue
 		}
 		meta.Sharers = append(meta.Sharers, mirror.SharerMeta{
-			MemberID: s.MemberID, Role: s.Role,
+			UserID: s.UserID, Role: s.Role,
 		})
 	}
 	return meta
@@ -540,7 +539,6 @@ func toNoteMeta(n *model.Note) mirror.NoteMeta {
 func toCardMeta(c *model.Card) mirror.CardMeta {
 	return mirror.CardMeta{
 		ID:            c.ID,
-		MemberID:      c.MemberID,
 		ContributorID: c.ContributorID,
 		ParentID:      c.ParentID,
 		Name:          c.Name,
@@ -557,9 +555,8 @@ func toCardMeta(c *model.Card) mirror.CardMeta {
 
 func toChartMeta(c *model.Chart) mirror.CardMeta {
 	return mirror.CardMeta{
-		ID:        c.ID,
-		MemberID:  c.MemberID,
-		ParentID:  c.ParentID,
+		ID:       c.ID,
+		ParentID: c.ParentID,
 		Name:      c.Name,
 		Fields:    c.Data,
 		IsDeleted: c.IsDeleted,

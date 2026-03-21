@@ -138,7 +138,7 @@ updatedAt: "1709000000000"
 func TestProcessDiff_NewFolder(t *testing.T) {
 	imp, fs := setupImporterFS()
 
-	folderJSON := `{"ID":"f-new","memberID":"user1","folderName":"新目錄","type":"NOTE"}`
+	folderJSON := `{"ID":"f-new","folderName":"新目錄","type":"NOTE"}`
 	fs.WriteFile("user1/NOTE/新目錄/_folder.json", []byte(folderJSON))
 
 	entries, err := imp.ProcessDiff("user1", []string{"NOTE/新目錄/_folder.json"}, nil, nil, nil, nil)
@@ -258,7 +258,7 @@ func TestProcessDiff_NewFormat_FallbackNameCleared(t *testing.T) {
 func TestProcessDiff_OldFolderJSON_StillWorks(t *testing.T) {
 	imp, fs := setupImporterFS()
 
-	folderJSON := `{"ID":"f1","memberID":"u1","folderName":"舊資料夾","type":"NOTE"}`
+	folderJSON := `{"ID":"f1","folderName":"舊資料夾","type":"NOTE"}`
 	fs.WriteFile("user1/NOTE/舊資料夾/_folder.json", []byte(folderJSON))
 
 	entries, err := imp.ProcessDiff("user1", []string{"NOTE/舊資料夾/_folder.json"}, nil, nil, nil, nil)

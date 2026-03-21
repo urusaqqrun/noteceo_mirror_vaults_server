@@ -51,7 +51,6 @@ func (m *mockDataReader) ListItemFolders(_ context.Context, _ string) ([]*model.
 			ID:   f.ID,
 			Type: "FOLDER",
 			Fields: map[string]interface{}{
-				"memberID":   f.MemberID,
 				"name":       f.FolderName,
 				"folderType": ft,
 				"parentID":   parentID,
@@ -71,10 +70,10 @@ func TestEventPipeline_NoteCreate_ExportsMarkdown(t *testing.T) {
 
 	reader := &mockDataReader{
 		folders: map[string]*model.Folder{
-			"f1": {ID: "f1", MemberID: "u1", FolderName: "工作", Type: &noteType},
+			"f1": {ID: "f1", FolderName: "工作", Type: &noteType},
 		},
 		notes: map[string]*model.Note{
-			"n1": {ID: "n1", MemberID: "u1", Title: &title, Content: &content, FolderID: "f1", Usn: 3, CreateAt: 1, UpdateAt: 2},
+			"n1": {ID: "n1", Title: &title, Content: &content, FolderID: "f1", Usn: 3, CreateAt: 1, UpdateAt: 2},
 		},
 		cards:  map[string]*model.Card{},
 		charts: map[string]*model.Chart{},
@@ -100,7 +99,7 @@ func TestEventPipeline_FolderUpdate_ExportsFolderJSON(t *testing.T) {
 	noteType := "NOTE"
 	reader := &mockDataReader{
 		folders: map[string]*model.Folder{
-			"f1": {ID: "f1", MemberID: "u1", FolderName: "工作", Type: &noteType, Usn: 2},
+			"f1": {ID: "f1", FolderName: "工作", Type: &noteType, Usn: 2},
 		},
 		notes: map[string]*model.Note{},
 		cards: map[string]*model.Card{}, charts: map[string]*model.Chart{},
@@ -178,10 +177,10 @@ func TestHandleEvent_VaultUnlocked_ProcessesNormally(t *testing.T) {
 	content := "<p>ok</p>"
 	reader := &mockDataReader{
 		folders: map[string]*model.Folder{
-			"f1": {ID: "f1", MemberID: "u1", FolderName: "Work", Type: &noteType},
+			"f1": {ID: "f1", FolderName: "Work", Type: &noteType},
 		},
 		notes: map[string]*model.Note{
-			"n1": {ID: "n1", MemberID: "u1", Title: &title, Content: &content, FolderID: "f1", Usn: 1, CreateAt: 1, UpdateAt: 2},
+			"n1": {ID: "n1", Title: &title, Content: &content, FolderID: "f1", Usn: 1, CreateAt: 1, UpdateAt: 2},
 		},
 		cards: map[string]*model.Card{}, charts: map[string]*model.Chart{},
 	}
@@ -232,11 +231,11 @@ func TestResolverCache_ReducesListFoldersCalls(t *testing.T) {
 	reader := &countingDataReader{
 		mockDataReader: mockDataReader{
 			folders: map[string]*model.Folder{
-				"f1": {ID: "f1", MemberID: "u1", FolderName: "Work", Type: &noteType},
+				"f1": {ID: "f1", FolderName: "Work", Type: &noteType},
 			},
 			notes: map[string]*model.Note{
-				"n1": {ID: "n1", MemberID: "u1", Title: &title1, Content: &content, FolderID: "f1", Usn: 1, CreateAt: 1, UpdateAt: 2},
-				"n2": {ID: "n2", MemberID: "u1", Title: &title2, Content: &content, FolderID: "f1", Usn: 2, CreateAt: 1, UpdateAt: 2},
+				"n1": {ID: "n1", Title: &title1, Content: &content, FolderID: "f1", Usn: 1, CreateAt: 1, UpdateAt: 2},
+				"n2": {ID: "n2", Title: &title2, Content: &content, FolderID: "f1", Usn: 2, CreateAt: 1, UpdateAt: 2},
 			},
 			cards: map[string]*model.Card{}, charts: map[string]*model.Chart{},
 		},
@@ -271,10 +270,10 @@ func TestResolverCache_InvalidatedOnFolderEvent(t *testing.T) {
 	reader := &countingDataReader{
 		mockDataReader: mockDataReader{
 			folders: map[string]*model.Folder{
-				"f1": {ID: "f1", MemberID: "u1", FolderName: "Work", Type: &noteType},
+				"f1": {ID: "f1", FolderName: "Work", Type: &noteType},
 			},
 			notes: map[string]*model.Note{
-				"n1": {ID: "n1", MemberID: "u1", Title: &title, Content: &content, FolderID: "f1", Usn: 1, CreateAt: 1, UpdateAt: 2},
+				"n1": {ID: "n1", Title: &title, Content: &content, FolderID: "f1", Usn: 1, CreateAt: 1, UpdateAt: 2},
 			},
 			cards: map[string]*model.Card{}, charts: map[string]*model.Chart{},
 		},
@@ -312,11 +311,11 @@ func TestEventPipeline_CardCreate_ExportsCardJSON(t *testing.T) {
 	fields := `{"name":"A"}`
 	reader := &mockDataReader{
 		folders: map[string]*model.Folder{
-			"c1": {ID: "c1", MemberID: "u1", FolderName: "卡片夾", Type: &cardType},
+			"c1": {ID: "c1", FolderName: "卡片夾", Type: &cardType},
 		},
 		notes: map[string]*model.Note{},
 		cards: map[string]*model.Card{
-			"card1": {ID: "card1", MemberID: "u1", ParentID: "c1", Name: "卡片一", Fields: &fields, Usn: 1},
+			"card1": {ID: "card1", ParentID: "c1", Name: "卡片一", Fields: &fields, Usn: 1},
 		},
 		charts: map[string]*model.Chart{},
 	}

@@ -3,7 +3,6 @@ package model
 // Card 卡片
 type Card struct {
 	ID            string  `json:"id" bson:"_id,omitempty"`
-	MemberID      string  `json:"memberID" bson:"memberID"`
 	ContributorID *string `json:"contributorId,omitempty" bson:"contributorId,omitempty"`
 	ParentID      string  `json:"parentID" bson:"parentID"`
 	Name          string  `json:"name" bson:"name"`

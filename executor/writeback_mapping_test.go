@@ -10,7 +10,6 @@ func TestFolderMetaToItemDoc_PreservesFolderItemType(t *testing.T) {
 	noteType := "NOTE"
 	doc := folderMetaToItemDoc(&mirror.FolderMeta{
 		ID:         "f1",
-		MemberID:   "u1",
 		FolderName: "資料夾",
 		Type:       &noteType,
 	}, "NOTE_FOLDER", 10)
@@ -23,7 +22,6 @@ func TestFolderMetaToItemDoc_PreservesFolderItemType(t *testing.T) {
 func TestFolderMetaToItemDoc_InvalidTypeFallsBack(t *testing.T) {
 	doc := folderMetaToItemDoc(&mirror.FolderMeta{
 		ID:         "f1",
-		MemberID:   "u1",
 		FolderName: "資料夾",
 	}, "UNKNOWN", 0)
 

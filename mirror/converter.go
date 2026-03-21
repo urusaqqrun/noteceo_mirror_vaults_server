@@ -35,7 +35,6 @@ type NoteMeta struct {
 // FolderMeta _folder.json 元資料（完整映射 model.Folder 所有欄位）
 type FolderMeta struct {
 	ID         string  `json:"id"`
-	MemberID   string  `json:"memberID"`
 	FolderName string  `json:"folderName"`
 	Type       *string `json:"type,omitempty"`
 	ParentID   *string `json:"parentID,omitempty"`
@@ -90,14 +89,13 @@ type TemplateHistoryMeta struct {
 }
 
 type SharerMeta struct {
-	MemberID string `json:"memberID"`
-	Role     string `json:"role"`
+	UserID string `json:"userId"`
+	Role   string `json:"role"`
 }
 
 // CardMeta Card/Chart JSON 元資料
 type CardMeta struct {
 	ID            string  `json:"id"`
-	MemberID      string  `json:"memberID,omitempty"`
 	ContributorID *string `json:"contributorId,omitempty"`
 	ParentID      string  `json:"parentID"`
 	Name          string  `json:"name"`

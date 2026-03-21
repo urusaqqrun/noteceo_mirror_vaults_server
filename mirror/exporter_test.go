@@ -24,7 +24,6 @@ func TestExportFolder_CreatesDirectoryAndJSON(t *testing.T) {
 	noteType := "NOTE"
 	err := exp.ExportFolder("user1", FolderMeta{
 		ID:         "f1",
-		MemberID:   "user1",
 		FolderName: "工作",
 		Type:       &noteType,
 		OrderAt:    strPtr("1709000000"),
@@ -49,10 +48,10 @@ func TestExportFolder_NestedCreatesParentDirs(t *testing.T) {
 	exp, fs := newTestExporter()
 	noteType := "NOTE"
 	// 先匯出父 Folder
-	exp.ExportFolder("user1", FolderMeta{ID: "f1", MemberID: "user1", FolderName: "工作", Type: &noteType})
+	exp.ExportFolder("user1", FolderMeta{ID: "f1", FolderName: "工作", Type: &noteType})
 	// 匯出子 Folder
 	err := exp.ExportFolder("user1", FolderMeta{
-		ID: "f2", MemberID: "user1", FolderName: "會議紀錄", Type: &noteType, ParentID: strPtr("f1"),
+		ID: "f2", FolderName: "會議紀錄", Type: &noteType, ParentID: strPtr("f1"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -176,13 +175,12 @@ func TestExportCard_RemovesOldPathBySameID(t *testing.T) {
 func TestExportFolder_RemovesOldPathBySameID(t *testing.T) {
 	exp, fs := newTestExporter()
 	noteType := "NOTE"
-	oldFolderJSON := `{"id":"f1","memberID":"user1","folderName":"舊工作","type":"NOTE","usn":1,"createdAt":"0","updatedAt":"0"}`
+	oldFolderJSON := `{"id":"f1","folderName":"舊工作","type":"NOTE","usn":1,"createdAt":"0","updatedAt":"0"}`
 	if err := fs.WriteFile("user1/NOTE/舊工作/_folder.json", []byte(oldFolderJSON)); err != nil {
 		t.Fatal(err)
 	}
 	if err := exp.ExportFolder("user1", FolderMeta{
 		ID:         "f1",
-		MemberID:   "user1",
 		FolderName: "工作",
 		Type:       &noteType,
 	}); err != nil {
@@ -199,7 +197,7 @@ func TestExportFolder_RemovesOldPathBySameID(t *testing.T) {
 func TestDeleteFolder_RemovesDirectory(t *testing.T) {
 	exp, fs := newTestExporter()
 	noteType := "NOTE"
-	exp.ExportFolder("user1", FolderMeta{ID: "f1", MemberID: "user1", FolderName: "工作", Type: &noteType})
+	exp.ExportFolder("user1", FolderMeta{ID: "f1", FolderName: "工作", Type: &noteType})
 	exp.ExportNote("user1", NoteMeta{ID: "n1", ParentID: "f1", Title: "test", USN: 1, CreatedAt: "0", UpdatedAt: "0"}, "<p>x</p>")
 
 	err := exp.DeleteFolder("user1", "f1")

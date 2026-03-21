@@ -2,9 +2,8 @@ package model
 
 // Note 筆記 / 待辦
 type Note struct {
-	ID        string   `bson:"_id,omitempty"`
-	MemberID  string   `bson:"memberID"`
-	Title     *string  `bson:"title"`
+	ID       string   `bson:"_id,omitempty"`
+	Title    *string  `bson:"title"`
 	Content   *string  `bson:"content"`
 	Tags      []string `bson:"tags"`
 	FolderID  string   `bson:"folderID"`

@@ -34,9 +34,8 @@ func TestItemToFolderMeta_DecodeComplexArrays(t *testing.T) {
 		ID:   "f1",
 		Type: model.ItemTypeFolder,
 		Fields: map[string]interface{}{
-			"memberID": "u1",
-			"name":     "工作",
-			"usn":      5,
+			"name": "工作",
+			"usn":  5,
 			"indexes": []interface{}{
 				map[string]interface{}{
 					"name":       "會議",
@@ -62,7 +61,6 @@ func TestItemToFolderMeta_DecodeSummarizedIDsFromString(t *testing.T) {
 		ID:   "f1",
 		Type: model.ItemTypeFolder,
 		Fields: map[string]interface{}{
-			"memberID":            "u1",
 			"name":                "工作",
 			"usn":                 5,
 			"isSummarizedNoteIds": "n-single",
@@ -116,9 +114,8 @@ func TestItemToFolderMeta_DecodeSummarizedIDsVariants(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fields := map[string]interface{}{
-				"memberID": "u1",
-				"name":     "工作",
-				"usn":      1,
+				"name": "工作",
+				"usn":  1,
 			}
 			if tt.value != nil {
 				fields["isSummarizedNoteIds"] = tt.value
@@ -160,9 +157,8 @@ func TestItemToFolderMeta_FolderTypeInference(t *testing.T) {
 				ID:   "f1",
 				Type: tt.itemType,
 				Fields: map[string]interface{}{
-					"memberID": "u1",
-					"name":     "folder",
-					"usn":      1,
+					"name": "folder",
+					"usn":  1,
 				},
 			})
 			if tt.wantType == nil {

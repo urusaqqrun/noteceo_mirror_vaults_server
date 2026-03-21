@@ -80,16 +80,12 @@ while IFS= read -r md_file; do
   fi
 done < <(find "$CWD" -name "*.md" -not -name "CLAUDE.md" -not -path "*/.NoteCEO/*" 2>/dev/null)
 
-# 檢查 3：所有 _folder.json 必須保留 ID 和 memberID
+# 檢查 3：所有 _folder.json 必須保留 ID
 while IFS= read -r folder_json; do
   HAS_ID=$(jq -r '.ID // empty' "$folder_json" 2>/dev/null)
-  HAS_MEMBER=$(jq -r '.memberID // empty' "$folder_json" 2>/dev/null)
-  if [ -z "$HAS_ID" ] || [ -z "$HAS_MEMBER" ]; then
+  if [ -z "$HAS_ID" ]; then
     REL=$(echo "$folder_json" | sed "s|$CWD/||")
-    MISSING=""
-    [ -z "$HAS_ID" ] && MISSING="ID"
-    [ -z "$HAS_MEMBER" ] && MISSING="${MISSING:+$MISSING、}memberID"
-    append_error "${REL} 缺少 ${MISSING} 欄位"
+    append_error "${REL} 缺少 ID 欄位"
   fi
 done < <(find "$CWD" -name "_folder.json" -not -path "*/.NoteCEO/*" 2>/dev/null)
 

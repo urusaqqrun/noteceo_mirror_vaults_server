@@ -3,7 +3,6 @@ package model
 // Folder 統一容器（NOTE / TODO / CARD / CHART）
 type Folder struct {
 	ID         string  `bson:"_id"`
-	MemberID   string  `bson:"memberID"`
 	FolderName string  `bson:"folderName"`
 	Type       *string `bson:"type,omitempty"`
 	ParentID   *string `json:"parentID,omitempty" bson:"parentID,omitempty"`
@@ -58,8 +57,8 @@ type TemplateHistoryEntry struct {
 }
 
 type Sharer struct {
-	MemberID string `json:"memberID" bson:"memberID"`
-	Role     string `json:"role" bson:"role"`
+	UserID string `json:"userId" bson:"userId"`
+	Role   string `json:"role" bson:"role"`
 }
 
 // FolderType 常數
