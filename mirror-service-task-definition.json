@@ -2,7 +2,7 @@
     "family": "mirror-service",
     "networkMode": "awsvpc",
     "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
-    "taskRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/noteceoTaskRole",
+    "taskRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/cubelv-task-role",
     "cpu": "512",
     "memory": "1024",
     "requiresCompatibilities": [
@@ -57,23 +57,23 @@
             "secrets": [
                 {
                     "name": "MODE",
-                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/noteceo/MODE"
+                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/cubelv/MODE"
                 },
                 {
                     "name": "PORT",
-                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/noteceo/MIRROR_PORT"
+                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/cubelv/MIRROR_PORT"
                 },
                 {
                     "name": "POSTGRES_URI",
-                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/noteceo/POSTGRES_URI"
+                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/cubelv/POSTGRES_URI"
                 },
                 {
                     "name": "REDIS_URI",
-                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/noteceo/REDIS_URI"
+                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/cubelv/REDIS_URI"
                 },
                 {
                     "name": "ANTHROPIC_API_KEY",
-                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/noteceo/ANTHROPIC_API_KEY"
+                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/cubelv/ANTHROPIC_API_KEY"
                 }
             ],
             "logConfiguration": {
