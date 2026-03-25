@@ -43,6 +43,11 @@ func main() {
 	defer pgStore.Close()
 	pgStore.SetRedis(rdb)
 
+	// Ensure chat_messages table exists
+	if err := pgStore.EnsureChatMessagesTable(ctx); err != nil {
+		log.Fatalf("EnsureChatMessagesTable 失敗: %v", err)
+	}
+
 	// VaultFS（EFS 實作）
 	vaultFS := &mirror.RealVaultFS{Root: cfg.VaultRoot}
 
@@ -96,6 +101,10 @@ func main() {
 	taskHandler.SetContext(ctx)
 	mux := http.NewServeMux()
 	taskHandler.RegisterRoutes(mux)
+
+	chatHandler := api.NewChatHandler(pgStore)
+	chatHandler.RegisterRoutes(mux)
+
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
 			"status": "ok",
