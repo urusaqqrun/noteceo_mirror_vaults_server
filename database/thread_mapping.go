@@ -18,7 +18,7 @@ func (s *PgStore) GetThreadsByMemberID(ctx context.Context, memberID, mode strin
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT thread_id, COALESCE(thread_title, ''), mode
 		FROM thread_mapping WHERE member_id=$1 AND mode=$2
-		ORDER BY created_at DESC`, memberID, mode)
+		ORDER BY updated_at DESC`, memberID, mode)
 	if err != nil {
 		return nil, fmt.Errorf("get threads by member: %w", err)
 	}
@@ -59,7 +59,7 @@ func (s *PgStore) AddThreadMapping(ctx context.Context, memberID, threadID, titl
 		AND thread_id NOT IN (
 			SELECT thread_id FROM thread_mapping
 			WHERE member_id=$1 AND mode=$2
-			ORDER BY created_at DESC LIMIT $3
+			ORDER BY updated_at DESC LIMIT $3
 		)`, memberID, mode, limit)
 	if err != nil {
 		return fmt.Errorf("trim thread mappings: %w", err)
