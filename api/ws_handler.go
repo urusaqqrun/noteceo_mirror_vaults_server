@@ -128,7 +128,13 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map[string]interface{}) {
+	// message 可能是 string（直接文字）或 object（{role, content}）
 	messageText, _ := msg["message"].(string)
+	if messageText == "" {
+		if msgObj, ok := msg["message"].(map[string]interface{}); ok {
+			messageText, _ = msgObj["content"].(string)
+		}
+	}
 	if messageText == "" {
 		return
 	}
