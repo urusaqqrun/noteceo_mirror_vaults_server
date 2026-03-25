@@ -157,6 +157,8 @@ func (e *ClaudeExecutor) ExecuteTaskStream(
 	claudeMD := buildClaudeMD(instruction)
 
 	args := []string{
+		"--print",
+		"--verbose",
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"-p", claudeMD,
