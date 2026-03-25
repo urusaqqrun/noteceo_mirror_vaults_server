@@ -45,7 +45,8 @@ RUN mkdir -p /home/mirror/.claude && \
     chmod +x /app/config/hooks/*.sh && \
     chown -R mirror:mirror /home/mirror/.claude /home/mirror/.bashrc
 
-RUN chmod +x /app/entrypoint.sh && \
+RUN sed -i 's/\r$//' /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh && \
     chown -R mirror:mirror /app
 
 EXPOSE 8080
