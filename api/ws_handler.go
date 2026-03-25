@@ -211,33 +211,54 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		subtype, _ := parsed["subtype"].(string)
 
 		switch {
-		case eventType == "assistant" && subtype == "text":
-			text, _ := parsed["text"].(string)
-			accumulatedText += text
-			session.Send(map[string]interface{}{
-				"type":        "stream_token",
-				"memberID":    session.memberID,
-				"token":       text,
-				"accumulated": accumulatedText,
-			})
-
-		case eventType == "assistant" && subtype == "thinking":
-			text, _ := parsed["text"].(string)
-			accumulatedThinking += text
-			session.Send(map[string]interface{}{
-				"type":        "thinking_token",
-				"memberID":    session.memberID,
-				"token":       text,
-				"accumulated": accumulatedThinking,
-			})
-
-		case eventType == "assistant" && subtype == "tool_use":
-			session.Send(map[string]interface{}{
-				"type":        "message",
-				"role":        "assistant",
-				"content":     "",
-				"tool_calls":  []map[string]interface{}{formatToolCall(parsed)},
-			})
+		case eventType == "assistant":
+			// --print --verbose stream-json: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+			if msg, ok := parsed["message"].(map[string]interface{}); ok {
+				if contentArr, ok := msg["content"].([]interface{}); ok {
+					for _, block := range contentArr {
+						blockMap, ok := block.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						blockType, _ := blockMap["type"].(string)
+						switch blockType {
+						case "text":
+							text, _ := blockMap["text"].(string)
+							accumulatedText += text
+							session.Send(map[string]interface{}{
+								"type":        "stream_token",
+								"memberID":    session.memberID,
+								"token":       text,
+								"accumulated": accumulatedText,
+							})
+						case "thinking":
+							text, _ := blockMap["thinking"].(string)
+							accumulatedThinking += text
+							session.Send(map[string]interface{}{
+								"type":        "thinking_token",
+								"memberID":    session.memberID,
+								"token":       text,
+								"accumulated": accumulatedThinking,
+							})
+						case "tool_use":
+							inputJSON, _ := json.Marshal(blockMap["input"])
+							session.Send(map[string]interface{}{
+								"type":    "message",
+								"role":    "assistant",
+								"content": "",
+								"tool_calls": []map[string]interface{}{{
+									"id":   blockMap["id"],
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      blockMap["name"],
+										"arguments": string(inputJSON),
+									},
+								}},
+							})
+						}
+					}
+				}
+			}
 
 		case eventType == "result" && subtype == "tool_result":
 			session.Send(map[string]interface{}{
@@ -248,8 +269,8 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			})
 
 		case eventType == "result" && subtype == "success":
-			if tu, ok := parsed["token_usage"]; ok {
-				if b, err := json.Marshal(tu); err == nil {
+			if tu, ok := parsed["cost_usd"]; ok {
+				if b, err := json.Marshal(map[string]interface{}{"cost_usd": tu}); err == nil {
 					tokenUsage = b
 				}
 			}
