@@ -355,11 +355,11 @@ Reflect the user's question. Avoid generic words like "conversation" or "discuss
 User: %s
 Assistant: %s`, userMsg, truncated)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	log.Printf("[WS] generating title for thread %s...", session.threadID)
-	cmd := exec.CommandContext(ctx, "claude", "--print", "--dangerously-skip-permissions", "-p", prompt)
+	cmd := exec.CommandContext(ctx, "claude", "--print", "--dangerously-skip-permissions", "--model", "claude-haiku-4-5-20251001", "-p", prompt)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("[WS] title generation failed: %v, output: %s", err, string(out)[:min(len(out), 200)])
