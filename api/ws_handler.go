@@ -358,10 +358,11 @@ Assistant: %s`, userMsg, truncated)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", "--print", "-p", prompt)
-	out, err := cmd.Output()
+	log.Printf("[WS] generating title for thread %s...", session.threadID)
+	cmd := exec.CommandContext(ctx, "claude", "--print", "--dangerously-skip-permissions", "-p", prompt)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("[WS] title generation failed: %v", err)
+		log.Printf("[WS] title generation failed: %v, output: %s", err, string(out)[:min(len(out), 200)])
 		return
 	}
 
