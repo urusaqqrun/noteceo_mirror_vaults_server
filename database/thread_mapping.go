@@ -33,17 +33,20 @@ func (s *PgStore) EnsureThreadMappingConstraint(ctx context.Context) error {
 }
 
 // ThreadInfo represents a thread in the thread_mapping table.
+// JSON tags use snake_case to match the frontend (chatStore.ts syncThreads).
 type ThreadInfo struct {
-	ThreadID string `json:"threadID"`
-	Title    string `json:"title"`
-	Mode     string `json:"mode"`
+	ThreadID  string `json:"thread_id"`
+	Title     string `json:"thread_title"`
+	Mode      string `json:"mode"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // GetThreadsByMemberID returns all threads for a member filtered by mode,
 // ordered by creation time descending (newest first).
 func (s *PgStore) GetThreadsByMemberID(ctx context.Context, memberID, mode string) ([]ThreadInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT thread_id, COALESCE(thread_title, ''), mode
+		SELECT thread_id, COALESCE(thread_title, ''), mode,
+		       COALESCE(EXTRACT(EPOCH FROM updated_at)::bigint * 1000, 0)::text
 		FROM thread_mapping WHERE member_id=$1 AND mode=$2
 		ORDER BY updated_at DESC`, memberID, mode)
 	if err != nil {
@@ -54,7 +57,7 @@ func (s *PgStore) GetThreadsByMemberID(ctx context.Context, memberID, mode strin
 	var threads []ThreadInfo
 	for rows.Next() {
 		var t ThreadInfo
-		if err := rows.Scan(&t.ThreadID, &t.Title, &t.Mode); err != nil {
+		if err := rows.Scan(&t.ThreadID, &t.Title, &t.Mode, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan thread: %w", err)
 		}
 		threads = append(threads, t)
