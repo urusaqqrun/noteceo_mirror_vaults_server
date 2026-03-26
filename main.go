@@ -43,12 +43,17 @@ func main() {
 	defer pgStore.Close()
 	pgStore.SetRedis(rdb)
 
+	// Migrate legacy "thread" tables/columns to "session" (idempotent)
+	if err := pgStore.MigrateThreadToSession(ctx); err != nil {
+		log.Printf("MigrateThreadToSession 警告: %v", err)
+	}
+
 	// Ensure chat_messages table exists
 	if err := pgStore.EnsureChatMessagesTable(ctx); err != nil {
 		log.Fatalf("EnsureChatMessagesTable 失敗: %v", err)
 	}
-	if err := pgStore.EnsureThreadMappingConstraint(ctx); err != nil {
-		log.Printf("EnsureThreadMappingConstraint 警告: %v", err)
+	if err := pgStore.EnsureSessionMappingConstraint(ctx); err != nil {
+		log.Printf("EnsureSessionMappingConstraint 警告: %v", err)
 	}
 
 	// VaultFS（EFS 實作）

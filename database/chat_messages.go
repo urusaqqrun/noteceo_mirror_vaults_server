@@ -14,7 +14,7 @@ import (
 // ChatMessage represents a single chat message stored in the chat_messages table.
 type ChatMessage struct {
 	ID            string          `json:"id"`
-	ThreadID      string          `json:"thread_id"`
+	SessionID     string          `json:"session_id"`
 	Mode          string          `json:"mode"`
 	Role          string          `json:"role"`
 	Content       string          `json:"content"`
@@ -33,7 +33,7 @@ func (s *PgStore) EnsureChatMessagesTable(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS chat_messages (
 			id             TEXT PRIMARY KEY,
-			thread_id      TEXT NOT NULL,
+			session_id     TEXT NOT NULL,
 			mode           TEXT NOT NULL DEFAULT 'chat',
 			role           TEXT NOT NULL,
 			content        TEXT,
@@ -50,10 +50,10 @@ func (s *PgStore) EnsureChatMessagesTable(ctx context.Context) error {
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_seq
-		ON chat_messages (thread_id, mode, seq)`)
+		CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq
+		ON chat_messages (session_id, mode, seq)`)
 	if err != nil {
-		return fmt.Errorf("create idx_chat_messages_thread_seq: %w", err)
+		return fmt.Errorf("create idx_chat_messages_session_seq: %w", err)
 	}
 
 	_, err = s.db.ExecContext(ctx, `
@@ -74,20 +74,20 @@ func (s *PgStore) InsertChatMessage(ctx context.Context, msg *ChatMessage) error
 		msg.ID = fmt.Sprintf("msg_%s", randomHex(8))
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO chat_messages (id, thread_id, mode, role, content, thinking,
+		INSERT INTO chat_messages (id, session_id, mode, role, content, thinking,
 			tool_calls, tool_call_id, attached_items, token_usage)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		msg.ID, msg.ThreadID, msg.Mode, msg.Role, msg.Content, msg.Thinking,
+		msg.ID, msg.SessionID, msg.Mode, msg.Role, msg.Content, msg.Thinking,
 		nullableJSON(msg.ToolCalls), msg.ToolCallID,
 		nullableJSON(msg.AttachedItems), nullableJSON(msg.TokenUsage),
 	)
 	return err
 }
 
-// GetMessagesAfter returns messages for a thread/mode after a cursor.
+// GetMessagesAfter returns messages for a session/mode after a cursor.
 // When cursorID is empty the newest `limit` messages are returned (in ascending order).
 // hasPrevious indicates whether older messages exist before the returned set.
-func (s *PgStore) GetMessagesAfter(ctx context.Context, threadID, mode, cursorID string, limit int) ([]ChatMessage, bool, error) {
+func (s *PgStore) GetMessagesAfter(ctx context.Context, sessionID, mode, cursorID string, limit int) ([]ChatMessage, bool, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -104,9 +104,9 @@ func (s *PgStore) GetMessagesAfter(ctx context.Context, threadID, mode, cursorID
 			return nil, false, nil
 		}
 		pgRows, err := s.db.QueryContext(ctx, `
-			SELECT id,thread_id,mode,role,content,thinking,tool_calls,tool_call_id,attached_items,token_usage,seq,created_at
-			FROM chat_messages WHERE thread_id=$1 AND mode=$2 AND seq > $3 ORDER BY seq ASC`,
-			threadID, mode, cursorSeq)
+			SELECT id,session_id,mode,role,content,thinking,tool_calls,tool_call_id,attached_items,token_usage,seq,created_at
+			FROM chat_messages WHERE session_id=$1 AND mode=$2 AND seq > $3 ORDER BY seq ASC`,
+			sessionID, mode, cursorSeq)
 		if err != nil {
 			return nil, false, err
 		}
@@ -117,9 +117,9 @@ func (s *PgStore) GetMessagesAfter(ctx context.Context, threadID, mode, cursorID
 		}
 	} else {
 		pgRows, err := s.db.QueryContext(ctx, `
-			SELECT id,thread_id,mode,role,content,thinking,tool_calls,tool_call_id,attached_items,token_usage,seq,created_at
-			FROM chat_messages WHERE thread_id=$1 AND mode=$2 ORDER BY seq DESC LIMIT $3`,
-			threadID, mode, limit)
+			SELECT id,session_id,mode,role,content,thinking,tool_calls,tool_call_id,attached_items,token_usage,seq,created_at
+			FROM chat_messages WHERE session_id=$1 AND mode=$2 ORDER BY seq DESC LIMIT $3`,
+			sessionID, mode, limit)
 		if err != nil {
 			return nil, false, err
 		}
@@ -134,8 +134,8 @@ func (s *PgStore) GetMessagesAfter(ctx context.Context, threadID, mode, cursorID
 	if len(rows) > 0 {
 		var exists bool
 		_ = s.db.QueryRowContext(ctx, `
-			SELECT EXISTS(SELECT 1 FROM chat_messages WHERE thread_id=$1 AND mode=$2 AND seq < $3)`,
-			threadID, mode, rows[0].Seq).Scan(&exists)
+			SELECT EXISTS(SELECT 1 FROM chat_messages WHERE session_id=$1 AND mode=$2 AND seq < $3)`,
+			sessionID, mode, rows[0].Seq).Scan(&exists)
 		hasPrevious = exists
 	}
 
@@ -144,7 +144,7 @@ func (s *PgStore) GetMessagesAfter(ctx context.Context, threadID, mode, cursorID
 
 // GetMessagesBefore returns up to `limit` messages before the given cursor,
 // ordered ascending by seq. hasPrevious indicates whether even older messages exist.
-func (s *PgStore) GetMessagesBefore(ctx context.Context, threadID, mode, cursorID string, limit int) ([]ChatMessage, bool, error) {
+func (s *PgStore) GetMessagesBefore(ctx context.Context, sessionID, mode, cursorID string, limit int) ([]ChatMessage, bool, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -157,9 +157,9 @@ func (s *PgStore) GetMessagesBefore(ctx context.Context, threadID, mode, cursorI
 	}
 
 	pgRows, err := s.db.QueryContext(ctx, `
-		SELECT id,thread_id,mode,role,content,thinking,tool_calls,tool_call_id,attached_items,token_usage,seq,created_at
-		FROM chat_messages WHERE thread_id=$1 AND mode=$2 AND seq < $3 ORDER BY seq DESC LIMIT $4`,
-		threadID, mode, cursorSeq, limit)
+		SELECT id,session_id,mode,role,content,thinking,tool_calls,tool_call_id,attached_items,token_usage,seq,created_at
+		FROM chat_messages WHERE session_id=$1 AND mode=$2 AND seq < $3 ORDER BY seq DESC LIMIT $4`,
+		sessionID, mode, cursorSeq, limit)
 	if err != nil {
 		return nil, false, err
 	}
@@ -173,8 +173,8 @@ func (s *PgStore) GetMessagesBefore(ctx context.Context, threadID, mode, cursorI
 	var hasPrevious bool
 	if len(rows) > 0 {
 		_ = s.db.QueryRowContext(ctx, `
-			SELECT EXISTS(SELECT 1 FROM chat_messages WHERE thread_id=$1 AND mode=$2 AND seq < $3)`,
-			threadID, mode, rows[0].Seq).Scan(&hasPrevious)
+			SELECT EXISTS(SELECT 1 FROM chat_messages WHERE session_id=$1 AND mode=$2 AND seq < $3)`,
+			sessionID, mode, rows[0].Seq).Scan(&hasPrevious)
 	}
 
 	return rows, hasPrevious, nil
@@ -193,7 +193,7 @@ func scanMessages(rows *sql.Rows) ([]ChatMessage, error) {
 		var toolCalls, attachedItems, tokenUsage []byte
 
 		if err := rows.Scan(
-			&m.ID, &m.ThreadID, &m.Mode, &m.Role,
+			&m.ID, &m.SessionID, &m.Mode, &m.Role,
 			&content, &thinking, &toolCalls, &toolCallID,
 			&attachedItems, &tokenUsage,
 			&m.Seq, &m.CreatedAt,

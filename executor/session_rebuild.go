@@ -1,0 +1,183 @@
+package executor
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// SessionMessage represents a chat message used for JSONL session rebuild.
+type SessionMessage struct {
+	ID         string          `json:"id"`
+	Role       string          `json:"role"`
+	Content    string          `json:"content"`
+	Thinking   string          `json:"thinking,omitempty"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
+// jsonlEntry is the per-line structure written to the .jsonl session file.
+type jsonlEntry struct {
+	Type       string                 `json:"type"`
+	Message    jsonlMessage           `json:"message"`
+	UUID       string                 `json:"uuid"`
+	ParentUUID interface{}            `json:"parentUuid"` // string or null
+	Timestamp  string                 `json:"timestamp"`
+	SessionID  string                 `json:"sessionId"`
+	Cwd        string                 `json:"cwd"`
+}
+
+type jsonlMessage struct {
+	Role    string        `json:"role"`
+	Content []interface{} `json:"content"`
+}
+
+// RebuildSessionJSONL writes chat messages as .jsonl to the Claude CLI session path:
+//
+//	~/.claude/projects/<encoded-workDir>/sessions/<sessionID>.jsonl
+//
+// This enables --resume to restore conversation context when the CLI restarts.
+func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []SessionMessage) error {
+	if sessionID == "" || len(messages) == 0 {
+		return nil
+	}
+
+	// Compute the encoded project path used by Claude CLI
+	encodedWorkDir := encodeProjectPath(workDir)
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+
+	sessionsDir := filepath.Join(homeDir, ".claude", "projects", encodedWorkDir, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return fmt.Errorf("mkdir sessions: %w", err)
+	}
+
+	filePath := filepath.Join(sessionsDir, sessionID+".jsonl")
+	cwd := filepath.Join("/vaults", memberID)
+
+	var lines []string
+	var prevUUID interface{} // null for the first entry
+
+	for _, msg := range messages {
+		entry := jsonlEntry{
+			UUID:       msg.ID,
+			ParentUUID: prevUUID,
+			Timestamp:  msg.CreatedAt.UTC().Format(time.RFC3339Nano),
+			SessionID:  sessionID,
+			Cwd:        cwd,
+		}
+
+		switch msg.Role {
+		case "user":
+			entry.Type = "user"
+			entry.Message = jsonlMessage{
+				Role: "user",
+				Content: []interface{}{
+					map[string]string{"type": "text", "text": msg.Content},
+				},
+			}
+
+		case "assistant":
+			entry.Type = "assistant"
+			var content []interface{}
+
+			if msg.Thinking != "" {
+				content = append(content, map[string]string{
+					"type":     "thinking",
+					"thinking": msg.Thinking,
+				})
+			}
+
+			// Parse tool_calls if present
+			if len(msg.ToolCalls) > 0 && string(msg.ToolCalls) != "null" {
+				var toolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				}
+				if json.Unmarshal(msg.ToolCalls, &toolCalls) == nil {
+					for _, tc := range toolCalls {
+						var input interface{}
+						if json.Unmarshal([]byte(tc.Function.Arguments), &input) != nil {
+							input = map[string]interface{}{}
+						}
+						content = append(content, map[string]interface{}{
+							"type":  "tool_use",
+							"id":    tc.ID,
+							"name":  tc.Function.Name,
+							"input": input,
+						})
+					}
+				}
+			}
+
+			if msg.Content != "" {
+				content = append(content, map[string]string{
+					"type": "text",
+					"text": msg.Content,
+				})
+			}
+
+			if len(content) == 0 {
+				content = append(content, map[string]string{
+					"type": "text",
+					"text": "",
+				})
+			}
+
+			entry.Message = jsonlMessage{
+				Role:    "assistant",
+				Content: content,
+			}
+
+		case "tool":
+			entry.Type = "toolUseResult"
+			entry.Message = jsonlMessage{
+				Role: "assistant",
+				Content: []interface{}{
+					map[string]interface{}{
+						"type":        "tool_result",
+						"tool_use_id": msg.ToolCallID,
+						"content":     msg.Content,
+					},
+				},
+			}
+
+		default:
+			continue
+		}
+
+		lineBytes, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		lines = append(lines, string(lineBytes))
+		prevUUID = msg.ID
+	}
+
+	content := strings.Join(lines, "\n") + "\n"
+	return os.WriteFile(filePath, []byte(content), 0644)
+}
+
+// encodeProjectPath produces the directory name Claude CLI uses for a project.
+// It takes the absolute workDir path and encodes it as a filesystem-safe string.
+// The CLI uses the SHA-256 hex prefix of the absolute path.
+func encodeProjectPath(workDir string) string {
+	// Claude CLI encodes project paths by replacing path separators with hyphens
+	// and prefixing with a hash for uniqueness
+	absPath := filepath.Clean(workDir)
+	h := sha256.Sum256([]byte(absPath))
+	return hex.EncodeToString(h[:16])
+}

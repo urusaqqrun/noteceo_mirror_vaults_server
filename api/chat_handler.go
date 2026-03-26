@@ -12,11 +12,11 @@ import (
 // ChatStore defines the database operations required by ChatHandler and WsHandler.
 // PgStore satisfies this interface.
 type ChatStore interface {
-	GetMessagesAfter(ctx context.Context, threadID, mode, cursorID string, limit int) ([]database.ChatMessage, bool, error)
-	GetMessagesBefore(ctx context.Context, threadID, mode, cursorID string, limit int) ([]database.ChatMessage, bool, error)
-	GetThreadsByMemberID(ctx context.Context, memberID, mode string) ([]database.ThreadInfo, error)
-	AddThreadMapping(ctx context.Context, memberID, threadID, title, mode string) error
-	DeleteUserThreads(ctx context.Context, memberID string) (int, int, error)
+	GetMessagesAfter(ctx context.Context, sessionID, mode, cursorID string, limit int) ([]database.ChatMessage, bool, error)
+	GetMessagesBefore(ctx context.Context, sessionID, mode, cursorID string, limit int) ([]database.ChatMessage, bool, error)
+	GetSessionsByMemberID(ctx context.Context, memberID, mode string) ([]database.SessionInfo, error)
+	AddSessionMapping(ctx context.Context, memberID, sessionID, title, mode string) error
+	DeleteUserSessions(ctx context.Context, memberID string) (int, int, error)
 	InsertChatMessage(ctx context.Context, msg *database.ChatMessage) error
 }
 
@@ -40,17 +40,17 @@ func (h *ChatHandler) SetWsHandler(ws *WsHandler) {
 func (h *ChatHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /get_messages_after_checkpoint", h.GetMessagesAfterCheckpoint)
 	mux.HandleFunc("POST /get_messages_before_checkpoint", h.GetMessagesBeforeCheckpoint)
-	mux.HandleFunc("POST /get_threads", h.GetThreads)
-	mux.HandleFunc("POST /add_thread", h.AddThread)
+	mux.HandleFunc("POST /get_sessions", h.GetSessions)
+	mux.HandleFunc("POST /add_session", h.AddSession)
 	mux.HandleFunc("POST /get_session_status", h.GetSessionStatus)
-	mux.HandleFunc("DELETE /api/internal/user/{member_id}/threads", h.DeleteUserThreads)
+	mux.HandleFunc("DELETE /api/internal/user/{member_id}/sessions", h.DeleteUserSessions)
 }
 
 // GetMessagesAfterCheckpoint returns messages after a checkpoint (cursor).
 // When checkpointID is empty, the latest N messages are returned.
 func (h *ChatHandler) GetMessagesAfterCheckpoint(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ThreadID     string `json:"threadID"`
+		SessionID    string `json:"sessionID"`
 		Mode         string `json:"mode"`
 		CheckpointID string `json:"checkpointID"`
 	}
@@ -59,7 +59,7 @@ func (h *ChatHandler) GetMessagesAfterCheckpoint(w http.ResponseWriter, r *http.
 		return
 	}
 
-	rows, hasPrevious, err := h.store.GetMessagesAfter(r.Context(), req.ThreadID, req.Mode, req.CheckpointID, 50)
+	rows, hasPrevious, err := h.store.GetMessagesAfter(r.Context(), req.SessionID, req.Mode, req.CheckpointID, 50)
 	if err != nil {
 		log.Printf("[ChatHandler] GetMessagesAfter error: %v", err)
 		chatWriteError(w, http.StatusInternalServerError, err.Error())
@@ -81,7 +81,7 @@ func (h *ChatHandler) GetMessagesAfterCheckpoint(w http.ResponseWriter, r *http.
 // GetMessagesBeforeCheckpoint returns messages before a checkpoint (cursor).
 func (h *ChatHandler) GetMessagesBeforeCheckpoint(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ThreadID     string `json:"threadID"`
+		SessionID    string `json:"sessionID"`
 		Mode         string `json:"mode"`
 		CheckpointID string `json:"checkpointID"`
 	}
@@ -90,7 +90,7 @@ func (h *ChatHandler) GetMessagesBeforeCheckpoint(w http.ResponseWriter, r *http
 		return
 	}
 
-	rows, hasPrevious, err := h.store.GetMessagesBefore(r.Context(), req.ThreadID, req.Mode, req.CheckpointID, 50)
+	rows, hasPrevious, err := h.store.GetMessagesBefore(r.Context(), req.SessionID, req.Mode, req.CheckpointID, 50)
 	if err != nil {
 		log.Printf("[ChatHandler] GetMessagesBefore error: %v", err)
 		chatWriteError(w, http.StatusInternalServerError, err.Error())
@@ -107,8 +107,8 @@ func (h *ChatHandler) GetMessagesBeforeCheckpoint(w http.ResponseWriter, r *http
 	})
 }
 
-// GetThreads returns the list of threads for a member.
-func (h *ChatHandler) GetThreads(w http.ResponseWriter, r *http.Request) {
+// GetSessions returns the list of sessions for a member.
+func (h *ChatHandler) GetSessions(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MemberID string `json:"memberID"`
 		Mode     string `json:"mode"`
@@ -118,66 +118,66 @@ func (h *ChatHandler) GetThreads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	threads, err := h.store.GetThreadsByMemberID(r.Context(), req.MemberID, req.Mode)
+	sessions, err := h.store.GetSessionsByMemberID(r.Context(), req.MemberID, req.Mode)
 	if err != nil {
-		log.Printf("[ChatHandler] GetThreads error: %v", err)
+		log.Printf("[ChatHandler] GetSessions error: %v", err)
 		chatWriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	chatWriteJSON(w, http.StatusOK, map[string]interface{}{"threads": threads})
+	chatWriteJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions})
 }
 
-// AddThread creates or updates a thread mapping.
-func (h *ChatHandler) AddThread(w http.ResponseWriter, r *http.Request) {
+// AddSession creates or updates a session mapping.
+func (h *ChatHandler) AddSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		MemberID    string `json:"memberID"`
-		ThreadID    string `json:"threadID"`
-		ThreadTitle string `json:"threadTitle"`
-		Mode        string `json:"mode"`
+		MemberID     string `json:"memberID"`
+		SessionID    string `json:"sessionID"`
+		SessionTitle string `json:"sessionTitle"`
+		Mode         string `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		chatWriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	err := h.store.AddThreadMapping(r.Context(), req.MemberID, req.ThreadID, req.ThreadTitle, req.Mode)
+	err := h.store.AddSessionMapping(r.Context(), req.MemberID, req.SessionID, req.SessionTitle, req.Mode)
 	if err != nil {
-		log.Printf("[ChatHandler] AddThread error: %v", err)
+		log.Printf("[ChatHandler] AddSession error: %v", err)
 		chatWriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	chatWriteJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
-// GetSessionStatus returns the session status for a member/thread.
+// GetSessionStatus returns the session status for a member/session.
 // When a WsHandler is configured, it queries the live WebSocket session;
 // otherwise it returns "idle".
 func (h *ChatHandler) GetSessionStatus(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		MemberID string `json:"memberID"`
-		ThreadID string `json:"threadID"`
+		MemberID  string `json:"memberID"`
+		SessionID string `json:"sessionID"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	status := "idle"
 	if h.wsHandler != nil {
-		status = h.wsHandler.GetSessionStatus(req.MemberID, req.ThreadID)
+		status = h.wsHandler.GetSessionStatus(req.MemberID, req.SessionID)
 	}
 	chatWriteJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 
-// DeleteUserThreads deletes all threads and chat messages for a user.
-func (h *ChatHandler) DeleteUserThreads(w http.ResponseWriter, r *http.Request) {
+// DeleteUserSessions deletes all sessions and chat messages for a user.
+func (h *ChatHandler) DeleteUserSessions(w http.ResponseWriter, r *http.Request) {
 	memberID := r.PathValue("member_id")
-	threadsDeleted, msgsDeleted, err := h.store.DeleteUserThreads(r.Context(), memberID)
+	sessionsDeleted, msgsDeleted, err := h.store.DeleteUserSessions(r.Context(), memberID)
 	if err != nil {
-		log.Printf("[ChatHandler] DeleteUserThreads error: %v", err)
+		log.Printf("[ChatHandler] DeleteUserSessions error: %v", err)
 		chatWriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	chatWriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success":            true,
-		"threadsDeleted":     threadsDeleted,
+		"sessionsDeleted":    sessionsDeleted,
 		"checkpointsDeleted": msgsDeleted,
 	})
 }

@@ -26,7 +26,7 @@ var upgrader = websocket.Upgrader{
 type WsSession struct {
 	conn           *websocket.Conn
 	memberID       string
-	threadID       string
+	sessionID      string
 	mode           string
 	taskID         string
 	status         string // idle, asking, interrupted
@@ -73,7 +73,7 @@ func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	memberID := q.Get("memberID")
-	threadID := q.Get("threadID")
+	sessionID := q.Get("sessionID")
 	mode := q.Get("mode")
 	token := q.Get("token")
 
@@ -92,13 +92,13 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := &WsSession{
-		conn:     conn,
-		memberID: memberID,
-		threadID: threadID,
-		mode:     mode,
-		status:   "idle",
+		conn:      conn,
+		memberID:  memberID,
+		sessionID: sessionID,
+		mode:      mode,
+		status:    "idle",
 	}
-	sessionKey := memberID + ":" + threadID
+	sessionKey := memberID + ":" + sessionID
 	h.sessions.Store(sessionKey, session)
 
 	defer func() {
@@ -192,7 +192,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 
 	// 1. Save user message
 	userMsg := &database.ChatMessage{
-		ThreadID: session.threadID,
+		SessionID: session.sessionID,
 		Mode:     session.mode,
 		Role:     "user",
 		Content:  messageText,
@@ -338,7 +338,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			}
 
 			// 即時扣款（同步，不是 fire-and-forget）
-			h.recordBilling(session.memberID, session.mode, session.threadID, parsed)
+			h.recordBilling(session.memberID, session.mode, session.sessionID, parsed)
 
 			// 每個 turn 結束後檢查餘額，不足就 kill CLI 中斷任務
 			if err := h.checkCredits(session.memberID); err != nil {
@@ -360,7 +360,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 
 	// 7. Save assistant message
 	assistantMsg := &database.ChatMessage{
-		ThreadID:   session.threadID,
+		SessionID:  session.sessionID,
 		Mode:       session.mode,
 		Role:       "assistant",
 		Content:    accumulatedText,
@@ -389,12 +389,13 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 	}
 
-	// 10. Generate thread title (fire-and-forget)
+	// 10. Generate session title (fire-and-forget)
 	go h.maybeGenerateTitle(session, messageText, accumulatedText)
 }
 
 // ensureCLI returns a live PersistentCLI for the session, starting one if needed.
-// If a previous CLI had a session ID, it uses --resume to restore conversation context.
+// If a previous CLI had a session ID, it rebuilds the .jsonl from DB and uses
+// --resume to restore conversation context.
 func (h *WsHandler) ensureCLI(session *WsSession) *executor.PersistentCLI {
 	session.mu.Lock()
 	cli := session.cli
@@ -415,8 +416,14 @@ func (h *WsHandler) ensureCLI(session *WsSession) *executor.PersistentCLI {
 	resumeID := session.cliSessionID
 	session.mu.Unlock()
 
-	// CLI not started or died — start synchronously (with resume if available)
 	workDir := filepath.Join(h.vaultRoot, session.memberID)
+
+	// Rebuild .jsonl before resuming so CLI has the full conversation history
+	if resumeID != "" {
+		h.rebuildSessionJSONL(session, resumeID, workDir)
+	}
+
+	// CLI not started or died — start synchronously (with resume if available)
 	newCLI, err := executor.NewPersistentCLI(workDir, "chat", session.memberID, resumeID, 5*time.Minute)
 	if err != nil {
 		log.Printf("[WS] CLI start failed for %s: %v", session.memberID, err)
@@ -428,6 +435,41 @@ func (h *WsHandler) ensureCLI(session *WsSession) *executor.PersistentCLI {
 	session.mu.Unlock()
 
 	return newCLI
+}
+
+// rebuildSessionJSONL queries chat messages from DB and writes the .jsonl file
+// so that CLI --resume can restore the conversation.
+func (h *WsHandler) rebuildSessionJSONL(session *WsSession, cliSessionID, workDir string) {
+	msgs, _, err := h.chatStore.GetMessagesAfter(
+		context.Background(), session.sessionID, session.mode, "", 200)
+	if err != nil {
+		log.Printf("[WS] rebuild JSONL: failed to query messages for session %s: %v",
+			session.sessionID, err)
+		return
+	}
+	if len(msgs) == 0 {
+		return
+	}
+
+	// Convert database.ChatMessage to executor.SessionMessage
+	smList := make([]executor.SessionMessage, 0, len(msgs))
+	for _, m := range msgs {
+		smList = append(smList, executor.SessionMessage{
+			ID:         m.ID,
+			Role:       m.Role,
+			Content:    m.Content,
+			Thinking:   m.Thinking,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+			CreatedAt:  m.CreatedAt,
+		})
+	}
+
+	if err := executor.RebuildSessionJSONL(cliSessionID, workDir, session.memberID, smList); err != nil {
+		log.Printf("[WS] rebuild JSONL error for session %s: %v", session.sessionID, err)
+	} else {
+		log.Printf("[WS] rebuilt JSONL for CLI session %s (%d messages)", cliSessionID, len(smList))
+	}
 }
 
 // diffAndNotify computes the vault diff after CLI execution and triggers writeback.
@@ -477,8 +519,8 @@ func (h *WsHandler) handleInterrupt(session *WsSession) {
 }
 
 func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg string) {
-	// Only generate title for the first message in a thread
-	msgs, _, err := h.chatStore.GetMessagesAfter(context.Background(), session.threadID, session.mode, "", 5)
+	// Only generate title for the first message in a session
+	msgs, _, err := h.chatStore.GetMessagesAfter(context.Background(), session.sessionID, session.mode, "", 5)
 	if err != nil || len(msgs) > 2 {
 		return
 	}
@@ -486,7 +528,7 @@ func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	log.Printf("[WS] generating title for thread %s via ai-service...", session.threadID)
+	log.Printf("[WS] generating title for session %s via ai-service...", session.sessionID)
 
 	// Call Python ai-service's generate_thread_title endpoint (uses GPT-4o-mini)
 	aiServiceURL := os.Getenv("AI_SERVICE_URL")
@@ -528,19 +570,19 @@ func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg
 	}
 
 	log.Printf("[WS] generated title: %s", title)
-	h.chatStore.AddThreadMapping(context.Background(), session.memberID, session.threadID, title, session.mode)
+	h.chatStore.AddSessionMapping(context.Background(), session.memberID, session.sessionID, title, session.mode)
 
 	session.Send(map[string]interface{}{
-		"type":      "thread_title_update",
-		"memberID":  session.memberID,
-		"thread_id": session.threadID,
-		"title":     title,
+		"type":       "session_title_update",
+		"memberID":   session.memberID,
+		"session_id": session.sessionID,
+		"title":      title,
 	})
 }
 
-// GetSessionStatus returns the session status for a given member/thread pair.
-func (h *WsHandler) GetSessionStatus(memberID, threadID string) string {
-	key := memberID + ":" + threadID
+// GetSessionStatus returns the session status for a given member/session pair.
+func (h *WsHandler) GetSessionStatus(memberID, sessionID string) string {
+	key := memberID + ":" + sessionID
 	if v, ok := h.sessions.Load(key); ok {
 		s := v.(*WsSession)
 		s.mu.Lock()
@@ -602,7 +644,7 @@ func (h *WsHandler) checkCredits(memberID string) error {
 }
 
 // recordBilling sends usage data to Python billing API after CLI response.
-func (h *WsHandler) recordBilling(memberID, mode, threadID string, resultEvent map[string]interface{}) {
+func (h *WsHandler) recordBilling(memberID, mode, sessionID string, resultEvent map[string]interface{}) {
 	aiServiceURL := os.Getenv("AI_SERVICE_URL")
 	if aiServiceURL == "" {
 		aiServiceURL = "http://chatbot.svc.local:8000"
@@ -636,7 +678,7 @@ func (h *WsHandler) recordBilling(memberID, mode, threadID string, resultEvent m
 		"cache_read_tokens":      int(cacheRead),
 		"category":               mode,
 		"action":                 "response",
-		"thread_id":              threadID,
+		"session_id":             sessionID,
 		"mode":                   mode,
 	}
 
