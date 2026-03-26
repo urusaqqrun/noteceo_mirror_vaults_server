@@ -19,9 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o vault-mirror-service ./mai
 FROM debian:bullseye-slim
 
 RUN apt-get update && \
-    apt-get install -y ca-certificates tzdata bash curl netcat-openbsd jq findutils \
-                       python3 python3-pip && \
-    pip3 install --no-cache-dir mcp requests && \
+    apt-get install -y ca-certificates tzdata bash curl netcat-openbsd jq findutils && \
     rm -rf /var/lib/apt/lists/*
 
 # 建立非 root 使用者（Claude CLI 拒絕以 root + --dangerously-skip-permissions 運行）
