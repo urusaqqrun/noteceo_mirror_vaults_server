@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/urusaqqrun/vault-mirror-service/mirror"
 )
@@ -25,14 +27,17 @@ func (h *SchemaHandler) RegisterRoutes(mux *http.ServeMux) {
 // SyncSchemas receives item type schemas from the frontend @itemType decorator
 // and writes them to .schemas/ in the user's vault directory.
 func (h *SchemaHandler) SyncSchemas(w http.ResponseWriter, r *http.Request) {
-	// Extract memberID from query or header
-	memberID := r.URL.Query().Get("memberID")
+	// Extract memberID: X-User-ID (nginx 注入) → JWT payload → query param
+	memberID := r.Header.Get("X-User-ID")
 	if memberID == "" {
-		memberID = r.Header.Get("X-User-ID")
+		memberID = extractMemberIDFromAuth(r.Header.Get("Authorization"))
 	}
 	if memberID == "" {
-		// Try to get from auth token (simplified: just use a default for now)
-		memberID = "_global"
+		memberID = r.URL.Query().Get("memberID")
+	}
+	if memberID == "" {
+		http.Error(w, `{"error":"missing memberID"}`, 401)
+		return
 	}
 
 	var req struct {
@@ -78,4 +83,34 @@ func (h *SchemaHandler) SyncSchemas(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"count":   len(req.Schemas),
 	})
+}
+
+// extractMemberIDFromAuth 從 Authorization header 的 JWT payload 取 user_id
+func extractMemberIDFromAuth(auth string) string {
+	token := strings.TrimPrefix(auth, "Bearer ")
+	if token == auth || token == "" {
+		return ""
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.StdEncoding.DecodeString(parts[1])
+		if err != nil {
+			return ""
+		}
+	}
+	var claims struct {
+		UserID string `json:"user_id"`
+		Sub    string `json:"sub"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	if claims.UserID != "" {
+		return claims.UserID
+	}
+	return claims.Sub
 }
