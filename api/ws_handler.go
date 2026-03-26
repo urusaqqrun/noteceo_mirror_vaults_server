@@ -38,8 +38,9 @@ func (s *WsSession) Send(msg map[string]interface{}) error {
 }
 
 // StreamTaskExecutor is the interface for streaming task execution.
+// ExecuteStream returns (vaultChanged, error).
 type StreamTaskExecutor interface {
-	ExecuteStream(task *Task, eventCh chan<- executor.StreamEvent) error
+	ExecuteStream(task *Task, eventCh chan<- executor.StreamEvent) (bool, error)
 	Cancel(taskID string) error
 }
 
@@ -192,8 +193,11 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	eventCh := make(chan executor.StreamEvent, 64)
 	doneCh := make(chan error, 1)
 
+	vaultChangedCh := make(chan bool, 1)
 	go func() {
-		doneCh <- h.executor.ExecuteStream(task, eventCh)
+		changed, err := h.executor.ExecuteStream(task, eventCh)
+		vaultChangedCh <- changed
+		doneCh <- err
 		close(eventCh)
 	}()
 
@@ -317,7 +321,16 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		"token_usage":    tokenUsage,
 	})
 
-	// 8. Generate thread title (fire-and-forget)
+	// 8. vault_changed — 通知前端 sync（只在 CLI 有改檔案時）
+	vaultChanged := <-vaultChangedCh
+	if vaultChanged {
+		session.Send(map[string]interface{}{
+			"type":     "vault_changed",
+			"memberID": session.memberID,
+		})
+	}
+
+	// 9. Generate thread title (fire-and-forget)
 	go h.maybeGenerateTitle(session, messageText, accumulatedText)
 }
 

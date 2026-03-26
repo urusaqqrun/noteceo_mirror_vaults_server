@@ -301,7 +301,7 @@ func (e *fullTaskExecutor) Execute(task *api.Task) error {
 // ExecuteStream runs the full vault pipeline with streaming Claude CLI output.
 // CLI execution is NOT locked — multiple conversations can run concurrently.
 // Only the writeback phase acquires the vault lock to prevent DB conflicts.
-func (e *fullTaskExecutor) ExecuteStream(task *api.Task, eventCh chan<- executor.StreamEvent) error {
+func (e *fullTaskExecutor) ExecuteStream(task *api.Task, eventCh chan<- executor.StreamEvent) (bool, error) {
 	workDir := fmt.Sprintf("%s/%s", e.vaultRoot, task.UserID)
 
 	e.vaultFS.MkdirAll(task.UserID)
@@ -331,7 +331,7 @@ func (e *fullTaskExecutor) ExecuteStream(task *api.Task, eventCh chan<- executor
 
 	beforeSnap, beforeIDMap, snapErr := executor.TakeSnapshotAndPathIDMap(e.vaultFS, task.UserID)
 	if snapErr != nil {
-		return fmt.Errorf("snapshot before error: %w", snapErr)
+		return false, fmt.Errorf("snapshot before error: %w", snapErr)
 	}
 
 	// Claude CLI streaming — NO LOCK, multiple conversations can run concurrently
@@ -339,18 +339,18 @@ func (e *fullTaskExecutor) ExecuteStream(task *api.Task, eventCh chan<- executor
 		execCtx, task.ID, workDir, task.Instruction, task.Scope, task.UserID, eventCh,
 	)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// diff + writeback — LOCK only for the writeback phase
 	afterSnap, snapErr := executor.TakeSnapshot(e.vaultFS, task.UserID)
 	if snapErr != nil {
-		return fmt.Errorf("snapshot after error: %w", snapErr)
+		return false, fmt.Errorf("snapshot after error: %w", snapErr)
 	}
 	diff := executor.ComputeDiff(beforeSnap, afterSnap)
 	hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
 	if !hasChanges {
-		return nil
+		return false, nil
 	}
 
 	importer := mirror.NewImporter(e.vaultFS)
@@ -360,7 +360,7 @@ func (e *fullTaskExecutor) ExecuteStream(task *api.Task, eventCh chan<- executor
 	}
 	entries, parseErr := importer.ProcessDiff(task.UserID, diff.Created, diff.Modified, diff.Deleted, movedEntries, beforeIDMap)
 	if parseErr != nil {
-		return fmt.Errorf("parse diff error: %w", parseErr)
+		return false, fmt.Errorf("parse diff error: %w", parseErr)
 	}
 
 	// Acquire lock only for DB writeback
@@ -380,7 +380,7 @@ func (e *fullTaskExecutor) ExecuteStream(task *api.Task, eventCh chan<- executor
 		}
 	}
 
-	return nil
+	return true, nil
 }
 
 func (e *fullTaskExecutor) Cancel(taskID string) error {
