@@ -343,7 +343,7 @@ func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	log.Printf("[WS] generating title for thread %s via ai-service...", session.threadID)
