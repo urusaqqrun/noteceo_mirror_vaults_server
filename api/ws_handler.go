@@ -193,6 +193,26 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	}
 	h.chatStore.InsertChatMessage(context.Background(), userMsg)
 
+	// 1b. mode-aware instruction wrapping
+	cliInstruction := messageText
+	if session.mode == "createCard" {
+		aiServiceURL := os.Getenv("AI_SERVICE_URL")
+		if aiServiceURL == "" {
+			aiServiceURL = "http://chatbot.svc.local:8000"
+		}
+		cliInstruction = fmt.Sprintf(`請補完以下卡片的空白欄位。
+
+規則：
+1. 已填寫的欄位（非空字串）保持不變，不要覆蓋
+2. IMAGE 欄位必須搜尋圖片 URL：curl -s -X POST %s/cubelv/search_card_image -H 'Content-Type: application/json' -d '{"query":"搜尋詞"}'
+3. 空白欄位嘗試上網搜尋補全，找不到則留空
+4. 完成後直接修改該卡片的 .json 檔案
+5. 不要詢問用戶，直接執行
+
+卡片資料：
+%s`, aiServiceURL, messageText)
+	}
+
 	// 2. Ensure persistent CLI is alive
 	cli := h.ensureCLI(session)
 	if cli == nil {
@@ -218,8 +238,8 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		log.Printf("[WS] snapshot before error: %v", snapErr)
 	}
 
-	// 5. Send message to persistent CLI
-	eventCh, err := cli.SendMessage(messageText)
+	// 5. Send message to persistent CLI (use wrapped instruction for createCard mode)
+	eventCh, err := cli.SendMessage(cliInstruction)
 	if err != nil {
 		session.Send(map[string]interface{}{
 			"type":     "stream_error",
