@@ -236,6 +236,11 @@ func (e *ClaudeExecutor) ExecuteTaskStream(
 }
 
 func buildClaudeMD(instruction string) string {
+	aiServiceURL := os.Getenv("AI_SERVICE_URL")
+	if aiServiceURL == "" {
+		aiServiceURL = "http://chatbot.svc.local:8000"
+	}
+
 	var sb strings.Builder
 	sb.WriteString("你是 NoteCEO Vault 的 AI 助手。\n")
 	sb.WriteString("你正在操作一個包含用戶筆記、卡片、圖表的檔案系統。\n\n")
@@ -249,6 +254,31 @@ func buildClaudeMD(instruction string) string {
 	sb.WriteString("2. 修改 .md 檔案時保留 frontmatter 的 id 和 parentID\n")
 	sb.WriteString("3. 搬移檔案時更新 frontmatter 中的 parentID\n")
 	sb.WriteString("4. 使用 Bash 時只用明確的絕對路徑，不要使用 cd、../ 或 shell 變數組合路徑\n\n")
+
+	// Card template API instructions
+	sb.WriteString("## 卡片模板 API\n\n")
+	sb.WriteString("建立或調整卡片模板時，**必須**透過 API 生成 HTML+CSS，不要自己寫。\n\n")
+
+	sb.WriteString("### 建立新卡片模板\n")
+	sb.WriteString("當用戶要求建立卡片畫廊或收集資料時，先定義欄位（3-8 個），再呼叫 API 生成模板：\n")
+	sb.WriteString("```bash\n")
+	sb.WriteString("curl -s -X POST " + aiServiceURL + "/cubelv/generate_card_template \\\n")
+	sb.WriteString("  -H 'Content-Type: application/json' \\\n")
+	sb.WriteString("  -d '{\"name\":\"卡片類型名稱\",\"fields\":[{\"name\":\"欄位名\",\"type\":\"TEXT\"},...],\"uiPrompt\":\"用戶的設計指示\"}'\n")
+	sb.WriteString("```\n")
+	sb.WriteString("回傳：`{\"templateHtml\":\"...\",\"templateCss\":\"...\"}`\n")
+	sb.WriteString("將回傳的 templateHtml 和 templateCss 寫入 _folder.json。\n\n")
+
+	sb.WriteString("可用欄位類型：TEXT, TEXTAREA, NUMBER, DATE, DATETIME, DATERANGE, URL, EMAIL, PHONE, IMAGE, SELECT, MULTISELECT, TAGS, BOOLEAN, RATING, LOCATION\n")
+	sb.WriteString("SELECT/MULTISELECT 需要附 options 陣列。\n\n")
+
+	sb.WriteString("### 調整現有卡片模板\n")
+	sb.WriteString("```bash\n")
+	sb.WriteString("curl -s -X POST " + aiServiceURL + "/cubelv/adjust_card_template \\\n")
+	sb.WriteString("  -H 'Content-Type: application/json' \\\n")
+	sb.WriteString("  -d '{\"currentHtml\":\"現有HTML\",\"currentCss\":\"現有CSS\",\"adjustInstruction\":\"調整指示\",\"fields\":[...]}'\n")
+	sb.WriteString("```\n")
+	sb.WriteString("回傳：`{\"templateHtml\":\"...\",\"templateCss\":\"...\"}`\n\n")
 	sb.WriteString("用戶指令：\n")
 	sb.WriteString(instruction)
 	return sb.String()
