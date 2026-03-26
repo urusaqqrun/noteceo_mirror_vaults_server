@@ -3,12 +3,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,8 +84,16 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: verify token (JWT)
-	_ = token
+	// Verify JWT: reject guest users
+	if token == "" {
+		http.Error(w, "token required", 401)
+		return
+	}
+	jwtRole := extractJWTRole(token)
+	if jwtRole == "guest" {
+		http.Error(w, "guest users cannot use AI features", 403)
+		return
+	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -691,4 +701,26 @@ func (h *WsHandler) recordBilling(memberID, mode, sessionID string, resultEvent 
 	resp.Body.Close()
 	log.Printf("[WS] billing recorded: model=%s in=%d out=%d cache_create=%d cache_read=%d",
 		modelName, int(inputTokens), int(outputTokens), int(cacheCreation), int(cacheRead))
+}
+
+// extractJWTRole decodes the JWT payload (without verification) and returns the role claim.
+func extractJWTRole(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.StdEncoding.DecodeString(parts[1])
+		if err != nil {
+			return ""
+		}
+	}
+	var claims struct {
+		Role string `json:"role"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	return claims.Role
 }
