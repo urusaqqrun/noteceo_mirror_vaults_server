@@ -374,13 +374,7 @@ func noteMetaToItemDoc(m *mirror.NoteMeta, body string, usn int) Doc {
 		fields["imgURLs"] = m.ImgURLs
 	}
 	if body != "" {
-		html, err := mirror.MarkdownToHTML(body)
-		if err != nil {
-			log.Printf("[noteMetaToItemDoc] MD→HTML conversion error: %v, using raw body", err)
-			fields["content"] = body
-		} else {
-			fields["content"] = html
-		}
+		fields["content"] = body // DB 統一存 Markdown
 	}
 	return Doc{
 		"_id":      m.ID,
@@ -633,13 +627,7 @@ func noteMetaToDoc(m *mirror.NoteMeta, body string) Doc {
 	}
 	doc["isNew"] = m.IsNew
 	if body != "" {
-		html, err := mirror.MarkdownToHTML(body)
-		if err != nil {
-			log.Printf("[noteMetaToDoc] MD→HTML conversion error: %v, using raw body", err)
-			doc["content"] = body
-		} else {
-			doc["content"] = html
-		}
+		doc["content"] = body // DB 統一存 Markdown
 	}
 	return doc
 }

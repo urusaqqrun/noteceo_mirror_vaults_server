@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	htmltomd "github.com/JohannesKaufmann/html-to-markdown/v2"
-	"github.com/yuin/goldmark"
 	"gopkg.in/yaml.v3"
 )
 
@@ -108,9 +106,9 @@ type CardMeta struct {
 	USN           int     `json:"usn,omitempty"`
 }
 
-// NoteToMarkdown 將 Note 的 HTML content 轉為帶 frontmatter 的 Markdown
-func NoteToMarkdown(meta NoteMeta, html string) (string, error) {
-	meta.HTMLHash = computeHash(html)
+// NoteToMarkdown 將 Note content（已是 Markdown）加上 frontmatter 匯出為 .md 檔案
+func NoteToMarkdown(meta NoteMeta, content string) (string, error) {
+	meta.HTMLHash = computeHash(content)
 
 	var buf bytes.Buffer
 
@@ -123,12 +121,8 @@ func NoteToMarkdown(meta NoteMeta, html string) (string, error) {
 	enc.Close()
 	buf.WriteString("---\n\n")
 
-	if html != "" {
-		md, err := htmltomd.ConvertString(html)
-		if err != nil {
-			return "", fmt.Errorf("html to markdown: %w", err)
-		}
-		buf.WriteString(md)
+	if content != "" {
+		buf.WriteString(content)
 	}
 
 	return buf.String(), nil
@@ -192,14 +186,7 @@ func JSONToCard(data []byte) (CardMeta, error) {
 	return meta, err
 }
 
-// MarkdownToHTML 將 Markdown 文字轉為 HTML（用於回寫資料庫的 content 欄位）
-func MarkdownToHTML(md string) (string, error) {
-	var buf bytes.Buffer
-	if err := goldmark.Convert([]byte(md), &buf); err != nil {
-		return "", fmt.Errorf("markdown to html: %w", err)
-	}
-	return buf.String(), nil
-}
+// MarkdownToHTML 已移除 — DB 統一存 Markdown，不需要轉 HTML
 
 func computeHash(content string) string {
 	h := sha256.Sum256([]byte(content))
