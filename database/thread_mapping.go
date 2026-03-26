@@ -46,7 +46,7 @@ type ThreadInfo struct {
 func (s *PgStore) GetThreadsByMemberID(ctx context.Context, memberID, mode string) ([]ThreadInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT thread_id, COALESCE(thread_title, ''), mode,
-		       COALESCE(EXTRACT(EPOCH FROM updated_at)::bigint * 1000, 0)::text
+		       COALESCE(updated_at::text, '0')
 		FROM thread_mapping WHERE member_id=$1 AND mode=$2
 		ORDER BY updated_at DESC`, memberID, mode)
 	if err != nil {
