@@ -3,7 +3,9 @@ package executor
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -233,6 +235,159 @@ func (e *ClaudeExecutor) ExecuteTaskStream(
 	}
 
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// PersistentCLI — keeps a single Claude CLI process alive across messages
+// ---------------------------------------------------------------------------
+
+// PersistentCLI wraps a long-lived Claude CLI process that communicates via
+// --input-format stream-json / --output-format stream-json on stdin/stdout.
+type PersistentCLI struct {
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Scanner
+	mu        sync.Mutex
+	idleTimer *time.Timer
+	idleTTL   time.Duration
+	workDir   string
+	alive     bool
+}
+
+// NewPersistentCLI starts a persistent Claude CLI process.
+// The process reads stream-json from stdin and writes stream-json to stdout.
+func NewPersistentCLI(workDir, scope, userID string, idleTTL time.Duration) (*PersistentCLI, error) {
+	args := []string{
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+	}
+
+	cmd := exec.Command("claude", args...)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(),
+		"TASK_SCOPE="+scope,
+		"VAULT_USER_ID="+userID,
+	)
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start claude cli: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	p := &PersistentCLI{
+		cmd:     cmd,
+		stdin:   stdinPipe,
+		stdout:  scanner,
+		idleTTL: idleTTL,
+		workDir: workDir,
+		alive:   true,
+	}
+	p.resetIdleTimer()
+
+	log.Printf("[PersistentCLI] started pid=%d workDir=%s", cmd.Process.Pid, workDir)
+	return p, nil
+}
+
+// SendMessage writes a user message to stdin and returns a channel of stdout
+// StreamEvents. The channel is closed after a "type":"result" event is received.
+func (p *PersistentCLI) SendMessage(message string) (<-chan StreamEvent, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.alive {
+		return nil, fmt.Errorf("CLI process not alive")
+	}
+
+	p.resetIdleTimer()
+
+	// Write stream-json user message to stdin
+	msg := map[string]interface{}{
+		"type": "user",
+		"message": map[string]string{
+			"role":    "user",
+			"content": message,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal message: %w", err)
+	}
+	data = append(data, '\n')
+	if _, err := p.stdin.Write(data); err != nil {
+		p.alive = false
+		return nil, fmt.Errorf("write stdin: %w", err)
+	}
+
+	ch := make(chan StreamEvent, 64)
+	go func() {
+		defer close(ch)
+		for p.stdout.Scan() {
+			line := p.stdout.Text()
+			if line == "" {
+				continue
+			}
+			ch <- StreamEvent{Type: "stdout", Data: line}
+
+			// Check if this is the final result event
+			var parsed map[string]interface{}
+			if json.Unmarshal([]byte(line), &parsed) == nil {
+				if parsed["type"] == "result" {
+					return
+				}
+			}
+		}
+		// Scanner stopped — process likely died
+		p.mu.Lock()
+		p.alive = false
+		p.mu.Unlock()
+	}()
+
+	return ch, nil
+}
+
+// Kill terminates the CLI process.
+func (p *PersistentCLI) Kill() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.idleTimer != nil {
+		p.idleTimer.Stop()
+	}
+	if p.alive && p.cmd.Process != nil {
+		log.Printf("[PersistentCLI] killing pid=%d", p.cmd.Process.Pid)
+		_ = p.cmd.Process.Kill()
+		_ = p.cmd.Wait()
+		p.alive = false
+	}
+}
+
+// IsAlive returns true if the CLI process is still running.
+func (p *PersistentCLI) IsAlive() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.alive
+}
+
+func (p *PersistentCLI) resetIdleTimer() {
+	if p.idleTimer != nil {
+		p.idleTimer.Stop()
+	}
+	p.idleTimer = time.AfterFunc(p.idleTTL, func() {
+		log.Printf("[PersistentCLI] idle timeout, killing pid=%d", p.cmd.Process.Pid)
+		p.Kill()
+	})
 }
 
 func buildClaudeMD(instruction string) string {

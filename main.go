@@ -108,7 +108,7 @@ func main() {
 	chatHandler := api.NewChatHandler(pgStore)
 	chatHandler.RegisterRoutes(mux)
 
-	wsHandler := api.NewWsHandler(taskExec, taskStore, pgStore)
+	wsHandler := api.NewWsHandler(taskExec, taskStore, pgStore, cfg.VaultRoot, vaultFS)
 	wsHandler.RegisterRoutes(mux)
 	chatHandler.SetWsHandler(wsHandler)
 

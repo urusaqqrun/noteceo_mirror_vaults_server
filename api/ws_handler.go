@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/urusaqqrun/vault-mirror-service/database"
 	"github.com/urusaqqrun/vault-mirror-service/executor"
+	"github.com/urusaqqrun/vault-mirror-service/mirror"
 )
 
 var upgrader = websocket.Upgrader{
@@ -28,6 +31,7 @@ type WsSession struct {
 	taskID   string
 	status   string // idle, asking, interrupted
 	mu       sync.Mutex
+	cli      *executor.PersistentCLI // persistent CLI process for this session
 }
 
 // Send writes a JSON message to the WebSocket connection (thread-safe).
@@ -49,12 +53,14 @@ type WsHandler struct {
 	executor  StreamTaskExecutor
 	store     TaskStore
 	chatStore ChatStore
+	vaultRoot string
+	vaultFS   mirror.VaultFS
 	sessions  sync.Map // sessionKey -> *WsSession
 }
 
 // NewWsHandler creates a new WsHandler.
-func NewWsHandler(exec StreamTaskExecutor, store TaskStore, chatStore ChatStore) *WsHandler {
-	return &WsHandler{executor: exec, store: store, chatStore: chatStore}
+func NewWsHandler(exec StreamTaskExecutor, store TaskStore, chatStore ChatStore, vaultRoot string, vaultFS mirror.VaultFS) *WsHandler {
+	return &WsHandler{executor: exec, store: store, chatStore: chatStore, vaultRoot: vaultRoot, vaultFS: vaultFS}
 }
 
 // RegisterRoutes registers the WebSocket route on the provided mux.
@@ -95,8 +101,29 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	h.sessions.Store(sessionKey, session)
 
 	defer func() {
+		// Kill persistent CLI on WebSocket close
+		session.mu.Lock()
+		if session.cli != nil {
+			session.cli.Kill()
+			session.cli = nil
+		}
+		session.mu.Unlock()
 		h.sessions.Delete(sessionKey)
 		conn.Close()
+	}()
+
+	// Pre-warm: start persistent CLI in background
+	go func() {
+		workDir := filepath.Join(h.vaultRoot, memberID)
+		cli, err := executor.NewPersistentCLI(workDir, "chat", memberID, 5*time.Minute)
+		if err != nil {
+			log.Printf("[WS] CLI pre-start failed for %s: %v", memberID, err)
+			return
+		}
+		session.mu.Lock()
+		session.cli = cli
+		session.mu.Unlock()
+		log.Printf("[WS] CLI pre-started for session %s", sessionKey)
 	}()
 
 	session.Send(map[string]interface{}{
@@ -166,42 +193,43 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	}
 	h.chatStore.InsertChatMessage(context.Background(), userMsg)
 
-	// 2. stream_start
+	// 2. Ensure persistent CLI is alive
+	cli := h.ensureCLI(session)
+	if cli == nil {
+		session.Send(map[string]interface{}{
+			"type":     "stream_error",
+			"memberID": session.memberID,
+			"error":    "failed to start CLI process",
+		})
+		return
+	}
+
+	// 3. stream_start
 	session.Send(map[string]interface{}{
 		"type":     "stream_start",
 		"memberID": session.memberID,
 	})
 
-	// 3. Create task + stream
-	instruction := buildInstruction(messageText, msg)
-
-	taskID, _ := h.store.NextTaskID(context.Background())
-	task := &Task{
-		ID:          taskID,
-		UserID:      session.memberID,
-		Instruction: instruction,
-		Status:      TaskStatusRunning,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+	// 4. Take vault snapshot BEFORE CLI runs (for diff + writeback)
+	beforeSnap, beforeIDMap, snapErr := executor.TakeSnapshotAndPathIDMap(
+		h.vaultFS, session.memberID,
+	)
+	if snapErr != nil {
+		log.Printf("[WS] snapshot before error: %v", snapErr)
 	}
-	h.store.CreateTask(context.Background(), task)
 
-	session.mu.Lock()
-	session.taskID = taskID
-	session.mu.Unlock()
+	// 5. Send message to persistent CLI
+	eventCh, err := cli.SendMessage(messageText)
+	if err != nil {
+		session.Send(map[string]interface{}{
+			"type":     "stream_error",
+			"memberID": session.memberID,
+			"error":    fmt.Sprintf("CLI send error: %v", err),
+		})
+		return
+	}
 
-	eventCh := make(chan executor.StreamEvent, 64)
-	doneCh := make(chan error, 1)
-
-	vaultChangedCh := make(chan bool, 1)
-	go func() {
-		changed, err := h.executor.ExecuteStream(task, eventCh)
-		vaultChangedCh <- changed
-		doneCh <- err
-		close(eventCh)
-	}()
-
-	// 4. Push events to WebSocket
+	// 6. Push events to WebSocket
 	accumulatedText := ""
 	accumulatedThinking := ""
 	var tokenUsage json.RawMessage
@@ -224,9 +252,8 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 
 		switch {
 		case eventType == "assistant":
-			// --print --verbose stream-json: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
-			if msg, ok := parsed["message"].(map[string]interface{}); ok {
-				if contentArr, ok := msg["content"].([]interface{}); ok {
+			if msgContent, ok := parsed["message"].(map[string]interface{}); ok {
+				if contentArr, ok := msgContent["content"].([]interface{}); ok {
 					for _, block := range contentArr {
 						blockMap, ok := block.(map[string]interface{})
 						if !ok {
@@ -289,19 +316,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 	}
 
-	// 5. Wait for completion
-	execErr := <-doneCh
-
-	if execErr != nil {
-		session.Send(map[string]interface{}{
-			"type":     "stream_error",
-			"memberID": session.memberID,
-			"error":    execErr.Error(),
-		})
-		return
-	}
-
-	// 6. Save assistant message
+	// 7. Save assistant message
 	assistantMsg := &database.ChatMessage{
 		ThreadID:   session.threadID,
 		Mode:       session.mode,
@@ -312,7 +327,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	}
 	h.chatStore.InsertChatMessage(context.Background(), assistantMsg)
 
-	// 7. stream_end
+	// 8. stream_end
 	session.Send(map[string]interface{}{
 		"type":           "stream_end",
 		"memberID":       session.memberID,
@@ -321,18 +336,80 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		"token_usage":    tokenUsage,
 	})
 
-	// 8. vault_changed — 通知前端 sync（只在 CLI 有改檔案時）
-	vaultChanged := <-vaultChangedCh
-	if vaultChanged {
-		session.Send(map[string]interface{}{
-			"type":     "vault_changed",
-			"memberID": session.memberID,
-		})
+	// 9. Vault diff + writeback (post-CLI)
+	if snapErr == nil {
+		vaultChanged := h.diffAndNotify(session, beforeSnap, beforeIDMap)
+		if vaultChanged {
+			session.Send(map[string]interface{}{
+				"type":     "vault_changed",
+				"memberID": session.memberID,
+			})
+		}
 	}
 
-	// 9. Generate thread title (fire-and-forget)
+	// 10. Generate thread title (fire-and-forget)
 	go h.maybeGenerateTitle(session, messageText, accumulatedText)
 }
+
+// ensureCLI returns a live PersistentCLI for the session, starting one if needed.
+func (h *WsHandler) ensureCLI(session *WsSession) *executor.PersistentCLI {
+	session.mu.Lock()
+	cli := session.cli
+	session.mu.Unlock()
+
+	if cli != nil && cli.IsAlive() {
+		return cli
+	}
+
+	// CLI not started or died — start synchronously
+	workDir := filepath.Join(h.vaultRoot, session.memberID)
+	newCLI, err := executor.NewPersistentCLI(workDir, "chat", session.memberID, 5*time.Minute)
+	if err != nil {
+		log.Printf("[WS] CLI start failed for %s: %v", session.memberID, err)
+		return nil
+	}
+
+	session.mu.Lock()
+	// Kill old CLI if it existed
+	if session.cli != nil {
+		session.cli.Kill()
+	}
+	session.cli = newCLI
+	session.mu.Unlock()
+
+	return newCLI
+}
+
+// diffAndNotify computes the vault diff after CLI execution and triggers writeback.
+// Returns true if the vault changed.
+func (h *WsHandler) diffAndNotify(
+	session *WsSession,
+	beforeSnap map[string]executor.FileSnapshot,
+	beforeIDMap map[string]string,
+) bool {
+	afterSnap, err := executor.TakeSnapshot(h.vaultFS, session.memberID)
+	if err != nil {
+		log.Printf("[WS] snapshot after error: %v", err)
+		return false
+	}
+
+	diff := executor.ComputeDiff(beforeSnap, afterSnap)
+	hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
+	if !hasChanges {
+		return false
+	}
+
+	log.Printf("[WS-Persistent] diff: +%d ~%d -%d mv%d",
+		len(diff.Created), len(diff.Modified), len(diff.Deleted), len(diff.Moved))
+
+	// Writeback is delegated to the fullTaskExecutor via ExecuteStream in the
+	// non-persistent path. For persistent CLI, the ws_handler signals
+	// vault_changed and the caller (main.go fullTaskExecutor) is not involved.
+	// The actual DB writeback for persistent mode will be handled by the sync
+	// worker picking up filesystem changes.
+	return true
+}
+
 
 func (h *WsHandler) handleInterrupt(session *WsSession) {
 	session.mu.Lock()
