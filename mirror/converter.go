@@ -21,6 +21,10 @@ func ItemToMirrorJSON(data ItemMirrorData) ([]byte, error) {
 }
 
 // MirrorJSONToItem 從 .json 反序列化為 ItemMirrorData
+// 支援兩種格式：
+// 1. nested: {"id":"x","name":"n","itemType":"T","fields":{"content":"..."}}
+// 2. flat:   {"id":"x","name":"n","itemType":"T","content":"...","tags":[]}
+// flat 格式會自動把非標準 key 收進 Fields
 func MirrorJSONToItem(raw []byte) (*ItemMirrorData, error) {
 	var data ItemMirrorData
 	if err := json.Unmarshal(raw, &data); err != nil {
@@ -29,8 +33,20 @@ func MirrorJSONToItem(raw []byte) (*ItemMirrorData, error) {
 	if data.ID == "" || data.ItemType == "" {
 		return nil, fmt.Errorf("invalid mirror json: missing id or itemType")
 	}
-	if data.Fields == nil {
-		data.Fields = make(map[string]interface{})
+	// 如果 Fields 為空，嘗試從 flat JSON 收集非標準 key 到 Fields
+	if data.Fields == nil || len(data.Fields) == 0 {
+		var flat map[string]interface{}
+		json.Unmarshal(raw, &flat)
+		fields := make(map[string]interface{})
+		standardKeys := map[string]bool{
+			"id": true, "name": true, "itemType": true, "fields": true,
+		}
+		for k, v := range flat {
+			if !standardKeys[k] {
+				fields[k] = v
+			}
+		}
+		data.Fields = fields
 	}
 	return &data, nil
 }
