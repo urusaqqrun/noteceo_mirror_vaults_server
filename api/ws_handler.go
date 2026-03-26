@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -345,45 +343,29 @@ func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg
 		return
 	}
 
-	truncated := assistantMsg
-	if len(truncated) > 200 {
-		truncated = truncated[:200]
-	}
-	prompt := fmt.Sprintf(`Generate a concise title for this conversation (max 15 characters for CJK, 5 words for English).
-Return ONLY the title text, no prefix, no quotes.
-Reflect the user's question. Avoid generic words like "conversation" or "discussion".
-
-User: %s
-Assistant: %s`, userMsg, truncated)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	log.Printf("[WS] generating title for thread %s...", session.threadID)
+	log.Printf("[WS] generating title for thread %s via ai-service...", session.threadID)
 
-	// Use Anthropic HTTP API directly (much faster than spawning claude CLI)
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		log.Printf("[WS] title generation skipped: no ANTHROPIC_API_KEY")
-		return
+	// Call Python ai-service's generate_thread_title endpoint (uses GPT-4o-mini)
+	aiServiceURL := os.Getenv("AI_SERVICE_URL")
+	if aiServiceURL == "" {
+		aiServiceURL = "http://chatbot.svc.local:8000"
 	}
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model":      "claude-haiku-4-5-20251001",
-		"max_tokens": 50,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
+		"userMessage":      userMsg,
+		"assistantMessage": assistantMsg,
+		"lang":             "繁體中文",
 	})
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", aiServiceURL+"/cubelv/generate_thread_title", bytes.NewReader(reqBody))
 	if err != nil {
 		log.Printf("[WS] title request error: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -393,24 +375,14 @@ Assistant: %s`, userMsg, truncated)
 	defer resp.Body.Close()
 
 	var result struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
+		Title string `json:"title"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Content) == 0 {
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Title == "" {
 		log.Printf("[WS] title parse error: %v", err)
 		return
 	}
 
-	title := strings.TrimSpace(result.Content[0].Text)
-	for _, prefix := range []string{"標題：", "標題:", "Title:", "Title：", "主題：", "主題:"} {
-		title = strings.TrimPrefix(title, prefix)
-	}
-	title = strings.Trim(title, "\"'`")
-	title = strings.TrimSpace(title)
-	if len([]rune(title)) > 20 {
-		title = string([]rune(title)[:17]) + "..."
-	}
+	title := result.Title
 	if title == "" {
 		return
 	}
