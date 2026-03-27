@@ -91,6 +91,7 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
+		warmupStart := time.Now()
 		workDir := filepath.Join(h.vaultRoot, memberID)
 		cli, err := executor.NewStreamCLI(workDir, "chat", memberID, "", 5*time.Minute)
 		if err != nil {
@@ -98,7 +99,8 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.cliPool.Store(memberID, cli)
-		log.Printf("[Warmup] CLI ready for %s (pid=%d)", memberID, cli.Pid())
+		log.Printf("[CacheProfile] Warmup DONE — %dms, member=%s, pid=%d",
+			time.Since(warmupStart).Milliseconds(), memberID, cli.Pid())
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -165,6 +167,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	isNew := q.Get("isNew") == "true"
 
 	go func() {
+		wsCliStart := time.Now()
 		workDir := filepath.Join(h.vaultRoot, memberID)
 
 		if isNew {
@@ -173,7 +176,8 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					session.mu.Lock()
 					session.cli = cli
 					session.mu.Unlock()
-					log.Printf("[WS] reused warm CLI for %s (pid=%d)", memberID, cli.Pid())
+					log.Printf("[CacheProfile] WS goroutine: reused warm CLI — %dms, pid=%d",
+						time.Since(wsCliStart).Milliseconds(), cli.Pid())
 					return
 				}
 			}
@@ -185,13 +189,17 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			session.mu.Lock()
 			session.cli = cli
 			session.mu.Unlock()
-			log.Printf("[WS] new CLI for new session %s", memberID)
+			log.Printf("[CacheProfile] WS goroutine: new CLI for new session — %dms, pid=%d",
+				time.Since(wsCliStart).Milliseconds(), cli.Pid())
 			return
 		}
 
 		if sessionID != "" {
+			queryStart := time.Now()
 			msgs, _, err := h.chatStore.GetMessagesAfter(
 				context.Background(), sessionID, mode, "", 200)
+			log.Printf("[CacheProfile] WS goroutine: GetMessagesAfter — %dms, count=%d",
+				time.Since(queryStart).Milliseconds(), len(msgs))
 			if err == nil && len(msgs) > 0 {
 				smList := make([]executor.SessionMessage, 0, len(msgs))
 				for _, m := range msgs {
@@ -206,10 +214,12 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					})
 				}
 
+				rebuildStart := time.Now()
 				if err := executor.RebuildSessionJSONL(sessionID, workDir, memberID, smList); err != nil {
 					log.Printf("[WS] rebuild JSONL error: %v", err)
 				} else {
-					log.Printf("[WS] rebuilt JSONL for %s (%d msgs)", sessionID, len(smList))
+					log.Printf("[CacheProfile] WS goroutine: RebuildSessionJSONL — %dms, msgs=%d",
+						time.Since(rebuildStart).Milliseconds(), len(smList))
 				}
 
 				cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, 5*time.Minute)
@@ -220,7 +230,8 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				session.mu.Lock()
 				session.cli = cli
 				session.mu.Unlock()
-				log.Printf("[WS] CLI resumed for %s (session=%s)", memberID, sessionID)
+				log.Printf("[CacheProfile] WS goroutine: CLI resumed — total %dms, session=%s",
+					time.Since(wsCliStart).Milliseconds(), sessionID)
 				return
 			}
 		}
@@ -233,7 +244,8 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		session.mu.Lock()
 		session.cli = cli
 		session.mu.Unlock()
-		log.Printf("[WS] new CLI (no history) for %s", memberID)
+		log.Printf("[CacheProfile] WS goroutine: new CLI (no history) — %dms, pid=%d",
+			time.Since(wsCliStart).Milliseconds(), cli.Pid())
 	}()
 
 	// Read loop
@@ -263,6 +275,9 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map[string]interface{}) {
+	handleStart := time.Now()
+	log.Printf("[CacheProfile] handleMessage START — member=%s session=%s", session.memberID, session.sessionID)
+
 	// 0. Credits check — 額度不足就拒絕
 	if err := h.checkCredits(session.memberID); err != nil {
 		session.Send(map[string]interface{}{
@@ -309,7 +324,9 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	h.chatStore.InsertChatMessage(context.Background(), userMsg)
 
 	// 2. Ensure StreamCLI is alive
+	ensureStart := time.Now()
 	cli := h.ensureCLI(session)
+	log.Printf("[CacheProfile] ensureCLI DONE — %dms", time.Since(ensureStart).Milliseconds())
 	if cli == nil {
 		session.Send(map[string]interface{}{
 			"type":     "stream_error",
@@ -335,15 +352,20 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	}
 
 	// 4. Take vault snapshot BEFORE CLI runs (for diff + writeback)
+	snapBeforeStart := time.Now()
 	beforeSnap, beforeIDMap, snapErr := executor.TakeSnapshotAndPathIDMap(
 		h.vaultFS, session.memberID,
 	)
+	log.Printf("[CacheProfile] snapshot_before DONE — %dms, files=%d",
+		time.Since(snapBeforeStart).Milliseconds(), len(beforeSnap))
 	if snapErr != nil {
 		log.Printf("[WS] snapshot before error: %v", snapErr)
 	}
 
 	// 5. Send message to StreamCLI
+	sendStart := time.Now()
 	eventCh, err := cli.SendMessage(messageText)
+	log.Printf("[CacheProfile] sendMessage DONE — %dms", time.Since(sendStart).Milliseconds())
 	if err != nil {
 		session.Send(map[string]interface{}{
 			"type":     "stream_error",
@@ -360,9 +382,16 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	var tokenUsage json.RawMessage
 
 	cliReadySent := false
+	firstStdoutReceived := false
 	for event := range eventCh {
 		if event.Type != "stdout" {
 			continue
+		}
+
+		if !firstStdoutReceived {
+			firstStdoutReceived = true
+			log.Printf("[CacheProfile] first_stdout DONE — %dms since sendMessage, %dms since handleMessage start, cacheBuilding=%v",
+				time.Since(sendStart).Milliseconds(), time.Since(handleStart).Milliseconds(), isCacheBuilding)
 		}
 
 		// First stdout event after cache building → send cli_ready, mark cache as built
@@ -585,7 +614,10 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 
 	// 9. Vault diff + writeback (post-CLI)
 	if snapErr == nil {
+		snapAfterStart := time.Now()
 		vaultChanged := h.diffAndNotify(session, beforeSnap, beforeIDMap)
+		log.Printf("[CacheProfile] snapshot_after+diff DONE — %dms, changed=%v",
+			time.Since(snapAfterStart).Milliseconds(), vaultChanged)
 		if vaultChanged {
 			session.Send(map[string]interface{}{
 				"type":     "vault_changed",
@@ -593,6 +625,9 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			})
 		}
 	}
+
+	log.Printf("[CacheProfile] handleMessage DONE — total=%dms, member=%s",
+		time.Since(handleStart).Milliseconds(), session.memberID)
 
 	// 10. Generate session title (fire-and-forget)
 	go h.maybeGenerateTitle(session, messageText, accumulatedText)
@@ -605,8 +640,11 @@ func (h *WsHandler) ensureCLI(session *WsSession) *executor.StreamCLI {
 	session.mu.Unlock()
 
 	if cli != nil && cli.IsAlive() {
+		log.Printf("[CacheProfile] ensureCLI: reusing alive CLI pid=%d", cli.Pid())
 		return cli
 	}
+
+	log.Printf("[CacheProfile] ensureCLI: CLI dead or nil, rebuilding")
 
 	session.mu.Lock()
 	if session.cli != nil {
@@ -616,13 +654,17 @@ func (h *WsHandler) ensureCLI(session *WsSession) *executor.StreamCLI {
 
 	workDir := filepath.Join(h.vaultRoot, session.memberID)
 
+	rebuildStart := time.Now()
 	h.rebuildSessionJSONL(session, workDir)
+	log.Printf("[CacheProfile] rebuildSessionJSONL DONE — %dms", time.Since(rebuildStart).Milliseconds())
 
+	cliStart := time.Now()
 	newCLI, err := executor.NewStreamCLI(workDir, "chat", session.memberID, session.sessionID, 5*time.Minute)
 	if err != nil {
-		log.Printf("[WS] CLI start failed for %s: %v", session.memberID, err)
+		log.Printf("[CacheProfile] NewStreamCLI FAILED — %dms, error=%v", time.Since(cliStart).Milliseconds(), err)
 		return nil
 	}
+	log.Printf("[CacheProfile] NewStreamCLI DONE — %dms, pid=%d", time.Since(cliStart).Milliseconds(), newCLI.Pid())
 
 	session.mu.Lock()
 	session.cli = newCLI

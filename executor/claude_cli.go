@@ -253,6 +253,8 @@ type StreamCLI struct {
 
 // NewStreamCLI 啟動帶有 streaming 功能的長駐 CLI
 func NewStreamCLI(workDir, scope, userID, resumeSessionID string, idleTTL time.Duration) (*StreamCLI, error) {
+	funcStart := time.Now()
+
 	vaultClaudeMD := filepath.Join(workDir, "CLAUDE.md")
 	args := []string{
 		"--bare",
@@ -293,9 +295,12 @@ func NewStreamCLI(workDir, scope, userID, resumeSessionID string, idleTTL time.D
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
+	cmdStartTime := time.Now()
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start claude cli: %w", err)
 	}
+	log.Printf("[CacheProfile] cmd.Start DONE — %dms, pid=%d, workDir=%s, resume=%s",
+		time.Since(cmdStartTime).Milliseconds(), cmd.Process.Pid, workDir, resumeSessionID)
 
 	// 背景讀取 stderr 並寫入 log，避免 CLI 錯誤被靜默吞掉
 	go func() {
@@ -320,7 +325,8 @@ func NewStreamCLI(workDir, scope, userID, resumeSessionID string, idleTTL time.D
 	}
 	s.resetIdleTimer()
 
-	log.Printf("[StreamCLI] started pid=%d workDir=%s resume=%s", cmd.Process.Pid, workDir, resumeSessionID)
+	log.Printf("[CacheProfile] NewStreamCLI total — %dms, pid=%d, workDir=%s, resume=%s",
+		time.Since(funcStart).Milliseconds(), cmd.Process.Pid, workDir, resumeSessionID)
 	return s, nil
 }
 
