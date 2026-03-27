@@ -116,20 +116,8 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.cliPool.Store(memberID, cli)
-
-		snapStart := time.Now()
-		snap, idMap, snapErr := executor.TakeSnapshotAndPathIDMap(h.vaultFS, memberID)
-		if snapErr != nil {
-			log.Printf("[Warmup] snapshot failed for %s: %v", memberID, snapErr)
-		} else {
-			rows := snapshotToDBRows(snap, idMap)
-			if dbErr := h.snapshotStore.ReplaceSnapshot(context.Background(), memberID, rows); dbErr != nil {
-				log.Printf("[Warmup] DB snapshot store failed for %s: %v", memberID, dbErr)
-			}
-		}
-		log.Printf("[CacheProfile] Warmup DONE — cli=%dms, snapshot=%dms, files=%d, member=%s, pid=%d",
-			time.Since(warmupStart).Milliseconds(), time.Since(snapStart).Milliseconds(),
-			len(snap), memberID, cli.Pid())
+		log.Printf("[CacheProfile] Warmup DONE — %dms, member=%s, pid=%d",
+			time.Since(warmupStart).Milliseconds(), memberID, cli.Pid())
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

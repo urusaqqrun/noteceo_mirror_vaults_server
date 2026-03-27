@@ -137,3 +137,48 @@ func (s *PgStore) SnapshotExists(ctx context.Context, memberID string) (bool, er
 	}
 	return count > 0, nil
 }
+
+// --- Single-file methods (for SnapshotAwareVaultFS wrapper) ---
+
+func (s *PgStore) UpsertSnapshotFile(ctx context.Context, memberID, filePath, hash, docID string, mtime int64) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO vault_snapshots (member_id, file_path, hash, mtime, doc_id, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (member_id, file_path) DO UPDATE SET
+			hash = EXCLUDED.hash, mtime = EXCLUDED.mtime,
+			doc_id = EXCLUDED.doc_id, updated_at = EXCLUDED.updated_at`,
+		memberID, filePath, hash, mtime, docID, now)
+	return err
+}
+
+func (s *PgStore) DeleteSnapshotFile(ctx context.Context, memberID, filePath string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM vault_snapshots WHERE member_id = $1 AND file_path = $2`,
+		memberID, filePath)
+	return err
+}
+
+func (s *PgStore) DeleteSnapshotByPrefix(ctx context.Context, memberID, prefix string) error {
+	if prefix == "" {
+		_, err := s.db.ExecContext(ctx,
+			`DELETE FROM vault_snapshots WHERE member_id = $1`, memberID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM vault_snapshots WHERE member_id = $1 AND (file_path = $2 OR file_path LIKE $3)`,
+		memberID, prefix, prefix+"/%")
+	return err
+}
+
+func (s *PgStore) RenameSnapshotPrefix(ctx context.Context, memberID, oldPrefix, newPrefix string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE vault_snapshots
+		SET file_path = $3 || substr(file_path, length($2) + 1),
+		    updated_at = $4
+		WHERE member_id = $1
+		  AND (file_path = $2 OR file_path LIKE $2 || '/%')`,
+		memberID, oldPrefix, newPrefix, now)
+	return err
+}

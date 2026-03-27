@@ -54,8 +54,9 @@ func main() {
 		log.Fatalf("EnsureVaultSnapshotsTable 失敗: %v", err)
 	}
 
-	// VaultFS（EFS 實作）
-	vaultFS := &mirror.RealVaultFS{Root: cfg.VaultRoot}
+	// VaultFS（EFS 實作 + DB 快照自動維護）
+	realFS := &mirror.RealVaultFS{Root: cfg.VaultRoot}
+	vaultFS := mirror.NewSnapshotAwareVaultFS(realFS, pgStore)
 
 	// Claude CLI executor
 	claudeExec := executor.NewClaudeExecutor(
