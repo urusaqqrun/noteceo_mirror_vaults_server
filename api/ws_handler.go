@@ -34,6 +34,10 @@ type WsSession struct {
 	status    string // idle, asking, interrupted
 	mu        sync.Mutex
 	cli       *executor.StreamCLI
+
+	cachedSnap  map[string]executor.FileSnapshot
+	cachedIDMap map[string]string
+	snapTime    time.Time
 }
 
 // Send writes a JSON message to the WebSocket connection (thread-safe).
@@ -178,6 +182,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					session.mu.Unlock()
 					log.Printf("[CacheProfile] WS goroutine: reused warm CLI — %dms, pid=%d",
 						time.Since(wsCliStart).Milliseconds(), cli.Pid())
+					h.precomputeSnapshot(session)
 					return
 				}
 			}
@@ -191,6 +196,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			session.mu.Unlock()
 			log.Printf("[CacheProfile] WS goroutine: new CLI for new session — %dms, pid=%d",
 				time.Since(wsCliStart).Milliseconds(), cli.Pid())
+			h.precomputeSnapshot(session)
 			return
 		}
 
@@ -232,6 +238,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				session.mu.Unlock()
 				log.Printf("[CacheProfile] WS goroutine: CLI resumed — total %dms, session=%s",
 					time.Since(wsCliStart).Milliseconds(), sessionID)
+				h.precomputeSnapshot(session)
 				return
 			}
 		}
@@ -246,6 +253,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		session.mu.Unlock()
 		log.Printf("[CacheProfile] WS goroutine: new CLI (no history) — %dms, pid=%d",
 			time.Since(wsCliStart).Milliseconds(), cli.Pid())
+		h.precomputeSnapshot(session)
 	}()
 
 	// Read loop
@@ -353,11 +361,23 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 
 	// 4. Take vault snapshot BEFORE CLI runs (for diff + writeback)
 	snapBeforeStart := time.Now()
-	beforeSnap, beforeIDMap, snapErr := executor.TakeSnapshotAndPathIDMap(
-		h.vaultFS, session.memberID,
-	)
-	log.Printf("[CacheProfile] snapshot_before DONE — %dms, files=%d",
-		time.Since(snapBeforeStart).Milliseconds(), len(beforeSnap))
+	session.mu.Lock()
+	beforeSnap := session.cachedSnap
+	beforeIDMap := session.cachedIDMap
+	session.mu.Unlock()
+
+	var snapErr error
+	if beforeSnap == nil {
+		beforeSnap, beforeIDMap, snapErr = executor.TakeSnapshotAndPathIDMap(
+			h.vaultFS, session.memberID,
+		)
+		log.Printf("[CacheProfile] snapshot_before FULL (no cache) — %dms, files=%d",
+			time.Since(snapBeforeStart).Milliseconds(), len(beforeSnap))
+	} else {
+		log.Printf("[CacheProfile] snapshot_before FROM CACHE — 0ms, files=%d",
+			len(beforeSnap))
+	}
+	messageStartTime := time.Now()
 	if snapErr != nil {
 		log.Printf("[WS] snapshot before error: %v", snapErr)
 	}
@@ -612,17 +632,34 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		"token_usage":    tokenUsage,
 	})
 
-	// 9. Vault diff + writeback (post-CLI)
+	// 9. Vault diff + writeback (post-CLI) — incremental snapshot
 	if snapErr == nil {
 		snapAfterStart := time.Now()
-		vaultChanged := h.diffAndNotify(session, beforeSnap, beforeIDMap)
-		log.Printf("[CacheProfile] snapshot_after+diff DONE — %dms, changed=%v",
-			time.Since(snapAfterStart).Milliseconds(), vaultChanged)
-		if vaultChanged {
-			session.Send(map[string]interface{}{
-				"type":     "vault_changed",
-				"memberID": session.memberID,
-			})
+		afterSnap, afterIDMap, afterErr := executor.TakeIncrementalSnapshot(
+			h.vaultFS, session.memberID, beforeSnap, beforeIDMap, messageStartTime,
+		)
+		if afterErr != nil {
+			log.Printf("[WS] incremental snapshot after error: %v", afterErr)
+		} else {
+			diff := executor.ComputeDiff(beforeSnap, afterSnap)
+			hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
+			log.Printf("[CacheProfile] snapshot_after INCREMENTAL+diff — %dms, changed=%v, +%d ~%d -%d mv%d",
+				time.Since(snapAfterStart).Milliseconds(), hasChanges,
+				len(diff.Created), len(diff.Modified), len(diff.Deleted), len(diff.Moved))
+
+			// 更新快取給下次訊息使用
+			session.mu.Lock()
+			session.cachedSnap = afterSnap
+			session.cachedIDMap = afterIDMap
+			session.snapTime = time.Now()
+			session.mu.Unlock()
+
+			if hasChanges {
+				session.Send(map[string]interface{}{
+					"type":     "vault_changed",
+					"memberID": session.memberID,
+				})
+			}
 		}
 	}
 
@@ -737,6 +774,24 @@ func (h *WsHandler) diffAndNotify(
 	return true
 }
 
+
+// precomputeSnapshot 背景預拍快照，讓第一則訊息不用等。
+func (h *WsHandler) precomputeSnapshot(session *WsSession) {
+	start := time.Now()
+	snap, idMap, err := executor.TakeSnapshotAndPathIDMap(h.vaultFS, session.memberID)
+	if err != nil {
+		log.Printf("[CacheProfile] precomputeSnapshot FAILED — %dms, err=%v",
+			time.Since(start).Milliseconds(), err)
+		return
+	}
+	session.mu.Lock()
+	session.cachedSnap = snap
+	session.cachedIDMap = idMap
+	session.snapTime = time.Now()
+	session.mu.Unlock()
+	log.Printf("[CacheProfile] precomputeSnapshot DONE — %dms, files=%d",
+		time.Since(start).Milliseconds(), len(snap))
+}
 
 func (h *WsHandler) handleInterrupt(session *WsSession) {
 	session.mu.Lock()
