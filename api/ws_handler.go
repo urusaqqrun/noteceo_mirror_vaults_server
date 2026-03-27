@@ -70,7 +70,7 @@ func NewWsHandler(exec StreamTaskExecutor, store TaskStore, chatStore ChatStore,
 // RegisterRoutes registers the WebSocket route on the provided mux.
 func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ws/chat", h.HandleWebSocket)
-	mux.HandleFunc("POST /api/cli/warmup", h.HandleWarmup)
+	mux.HandleFunc("POST /cli_warmup", h.HandleWarmup)
 }
 
 // HandleWarmup pre-warms a CLI process into the pool for a member.

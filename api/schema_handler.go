@@ -70,13 +70,6 @@ func (h *SchemaHandler) SyncSchemas(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Write _index.json with all schemas
-	indexData, _ := json.MarshalIndent(req.Schemas, "", "  ")
-	indexPath := filepath.Join(schemasDir, "_index.json")
-	if err := h.fs.WriteFile(indexPath, indexData); err != nil {
-		log.Printf("[SchemaHandler] write _index.json error: %v", err)
-	}
-
 	// Update user-level CLAUDE.md with aiHints from schemas
 	updateUserClaudeMD(h.fs, memberID, req.Schemas)
 

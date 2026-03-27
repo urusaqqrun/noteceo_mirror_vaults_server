@@ -2,10 +2,11 @@
 
 你正在操作一個包含用戶資料的檔案系統。
 
-## 重要：先讀 .schemas/_index.json
+## 重要：先讀 .schemas/ 目錄
 
-建立任何 item 之前，**必須**先讀 .schemas/_index.json 確認正確的 itemType 名稱和欄位。
-不要自己猜 itemType，只用 .schemas/ 裡列出的名稱（如 NOTE、NOTE_FOLDER、CARD、CARD_FOLDER、TODO、TODO_FOLDER 等）。
+建立任何 item 之前，**必須**先讀 .schemas/ 目錄下的各個 .json 檔案確認正確的 itemType 名稱和欄位。
+每個 itemType 對應一個檔案（如 .schemas/NOTE.json、.schemas/CARD_FOLDER.json）。
+不要自己猜 itemType，只用 .schemas/ 裡列出的名稱。
 
 ## 目錄結構
 
@@ -49,7 +50,7 @@ curl -s -X POST {AI_SERVICE_URL}/cubelv/search_card_image \
 
 ## aiHints
 
-讀 .schemas/_index.json，每個 type 可能有 aiHints 欄位，列出該 type 的特殊操作指示。
+讀 .schemas/ 下各個 type 的 .json 檔，每個 type 可能有 aiHints 欄位，列出該 type 的特殊操作指示。
 aiHints 中的 {AI_SERVICE_URL} 請替換為實際 API URL。
 
 ## 語言
