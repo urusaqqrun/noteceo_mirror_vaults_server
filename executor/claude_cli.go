@@ -258,7 +258,6 @@ func NewStreamCLI(workDir, scope, userID, resumeSessionID string, idleTTL time.D
 		"--input-format", "stream-json",
 		"--verbose",
 		"--dangerously-skip-permissions",
-		"--bare",
 	}
 
 	if resumeSessionID != "" {

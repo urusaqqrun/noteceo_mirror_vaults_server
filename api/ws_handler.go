@@ -99,8 +99,24 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[Warmup] CLI start failed for %s: %v", memberID, err)
 			return
 		}
+		log.Printf("[Warmup] CLI started for %s (pid=%d), sending cache warmup...", memberID, cli.Pid())
+
+		ch, err := cli.SendMessage(".")
+		if err != nil {
+			log.Printf("[Warmup] warmup message failed for %s: %v", memberID, err)
+			cli.Kill()
+			return
+		}
+		for range ch {
+		}
+
+		if !cli.IsAlive() {
+			log.Printf("[Warmup] CLI died during warmup for %s", memberID)
+			return
+		}
+
 		h.cliPool.Store(memberID, cli)
-		log.Printf("[Warmup] CLI ready for %s (pid=%d)", memberID, cli.Pid())
+		log.Printf("[Warmup] CLI ready with warm cache for %s (pid=%d)", memberID, cli.Pid())
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
