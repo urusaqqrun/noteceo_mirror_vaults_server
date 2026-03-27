@@ -59,6 +59,7 @@ type WsHandler struct {
 	vaultRoot string
 	vaultFS   mirror.VaultFS
 	sessions  sync.Map // sessionKey -> *WsSession
+	cliPool   sync.Map // memberID -> *executor.StreamCLI (warmup pool)
 }
 
 // NewWsHandler creates a new WsHandler.
@@ -69,6 +70,41 @@ func NewWsHandler(exec StreamTaskExecutor, store TaskStore, chatStore ChatStore,
 // RegisterRoutes registers the WebSocket route on the provided mux.
 func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ws/chat", h.HandleWebSocket)
+	mux.HandleFunc("POST /api/cli/warmup", h.HandleWarmup)
+}
+
+// HandleWarmup pre-warms a CLI process into the pool for a member.
+func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
+	memberID := r.URL.Query().Get("memberID")
+	if memberID == "" {
+		http.Error(w, "memberID required", 400)
+		return
+	}
+
+	if val, ok := h.cliPool.Load(memberID); ok {
+		if cli, ok := val.(*executor.StreamCLI); ok && cli.IsAlive() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			json.NewEncoder(w).Encode(map[string]string{"status": "already_warm"})
+			return
+		}
+		h.cliPool.Delete(memberID)
+	}
+
+	go func() {
+		workDir := filepath.Join(h.vaultRoot, memberID)
+		cli, err := executor.NewStreamCLI(workDir, "chat", memberID, "", 5*time.Minute)
+		if err != nil {
+			log.Printf("[Warmup] CLI start failed for %s: %v", memberID, err)
+			return
+		}
+		h.cliPool.Store(memberID, cli)
+		log.Printf("[Warmup] CLI ready for %s (pid=%d)", memberID, cli.Pid())
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	json.NewEncoder(w).Encode(map[string]string{"status": "warming"})
 }
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket and starts the read loop.
@@ -122,18 +158,81 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// Pre-warm: 背景啟動 StreamCLI
+	isNew := q.Get("isNew") == "true"
+
 	go func() {
 		workDir := filepath.Join(h.vaultRoot, memberID)
+
+		if isNew {
+			if val, loaded := h.cliPool.LoadAndDelete(memberID); loaded {
+				if cli, ok := val.(*executor.StreamCLI); ok && cli.IsAlive() {
+					session.mu.Lock()
+					session.cli = cli
+					session.mu.Unlock()
+					log.Printf("[WS] reused warm CLI for %s (pid=%d)", memberID, cli.Pid())
+					return
+				}
+			}
+			cli, err := executor.NewStreamCLI(workDir, "chat", memberID, "", 5*time.Minute)
+			if err != nil {
+				log.Printf("[WS] CLI start failed for %s: %v", memberID, err)
+				return
+			}
+			session.mu.Lock()
+			session.cli = cli
+			session.mu.Unlock()
+			log.Printf("[WS] new CLI for new session %s", memberID)
+			return
+		}
+
+		if sessionID != "" {
+			msgs, _, err := h.chatStore.GetMessagesAfter(
+				context.Background(), sessionID, mode, "", 200)
+			if err == nil && len(msgs) > 0 {
+				cliSessionUUID := fmt.Sprintf("%x", time.Now().UnixNano())
+
+				smList := make([]executor.SessionMessage, 0, len(msgs))
+				for _, m := range msgs {
+					smList = append(smList, executor.SessionMessage{
+						ID:         m.ID,
+						Role:       m.Role,
+						Content:    m.Content,
+						Thinking:   m.Thinking,
+						ToolCalls:  m.ToolCalls,
+						ToolCallID: m.ToolCallID,
+						CreatedAt:  m.CreatedAt,
+					})
+				}
+
+				if err := executor.RebuildSessionJSONL(cliSessionUUID, workDir, memberID, smList); err != nil {
+					log.Printf("[WS] rebuild JSONL error: %v", err)
+				} else {
+					log.Printf("[WS] rebuilt JSONL for %s (%d msgs)", cliSessionUUID, len(smList))
+				}
+
+				cli, err := executor.NewStreamCLI(workDir, "chat", memberID, cliSessionUUID, 5*time.Minute)
+				if err != nil {
+					log.Printf("[WS] CLI resume start failed for %s: %v", memberID, err)
+					return
+				}
+				session.mu.Lock()
+				session.cli = cli
+				session.cliSessionID = cliSessionUUID
+				session.mu.Unlock()
+				log.Printf("[WS] CLI resumed for %s (cliSession=%s)", memberID, cliSessionUUID)
+				return
+			}
+		}
+
 		cli, err := executor.NewStreamCLI(workDir, "chat", memberID, "", 5*time.Minute)
 		if err != nil {
-			log.Printf("[WS] CLI pre-start failed for %s: %v", memberID, err)
+			log.Printf("[WS] CLI start failed for %s: %v", memberID, err)
 			return
 		}
 		session.mu.Lock()
 		session.cli = cli
 		session.mu.Unlock()
-		log.Printf("[WS] CLI pre-started for session %s", sessionKey)
+		log.Printf("[WS] new CLI (no history) for %s", memberID)
 	}()
 
 	session.Send(map[string]interface{}{

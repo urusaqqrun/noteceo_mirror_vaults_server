@@ -389,6 +389,13 @@ func (s *StreamCLI) IsAlive() bool {
 	return s.alive
 }
 
+func (s *StreamCLI) Pid() int {
+	if s.cmd != nil && s.cmd.Process != nil {
+		return s.cmd.Process.Pid
+	}
+	return 0
+}
+
 func (s *StreamCLI) SessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
