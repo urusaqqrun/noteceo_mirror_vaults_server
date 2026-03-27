@@ -89,7 +89,7 @@ func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /cli_warmup", h.HandleWarmup)
 }
 
-// HandleWarmup pre-warms a CLI process and takes a full snapshot → DB.
+// HandleWarmup pre-warms a CLI process into the pool.
 func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 	memberID := r.URL.Query().Get("memberID")
 	if memberID == "" {
@@ -413,7 +413,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			})
 		}
 
-		log.Printf("[WS-CLI] raw line: %s", event.Data[:min(len(event.Data), 200)])
+		log.Printf("[WS-CLI] raw line: %s", event.Data[:min(len(event.Data), 2000)])
 
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(event.Data), &parsed); err != nil {
