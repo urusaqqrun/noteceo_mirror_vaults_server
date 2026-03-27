@@ -246,8 +246,9 @@ type PersistentCLI struct {
 	idleTimer *time.Timer
 	idleTTL   time.Duration
 	workDir   string
-	sessionID string // CLI session UUID, used for --resume on restart
-	alive     bool
+	sessionID  string // CLI session UUID, used for --resume on restart
+	alive      bool
+	CacheBuilt bool // true after first message builds Anthropic prompt cache
 }
 
 // NewPersistentCLI starts a persistent Claude CLI process.

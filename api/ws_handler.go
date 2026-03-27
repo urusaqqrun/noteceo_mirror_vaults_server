@@ -123,6 +123,11 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
+	session.Send(map[string]interface{}{
+		"type":      "connected",
+		"sessionId": sessionKey,
+	})
+
 	// Pre-warm: start persistent CLI in background (no resume on first connect)
 	go func() {
 		workDir := filepath.Join(h.vaultRoot, memberID)
@@ -136,11 +141,6 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		session.mu.Unlock()
 		log.Printf("[WS] CLI pre-started for session %s", sessionKey)
 	}()
-
-	session.Send(map[string]interface{}{
-		"type":      "connected",
-		"sessionId": sessionKey,
-	})
 
 	// Read loop
 	for {
@@ -231,6 +231,15 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		"memberID": session.memberID,
 	})
 
+	// First message on this CLI → cache miss, show "正在準備 CLI 環境"
+	// Subsequent messages → cache hit, skip (frontend shows "正在思考" by default)
+	isCacheBuilding := !cli.CacheBuilt
+	if isCacheBuilding {
+		session.Send(map[string]interface{}{
+			"type": "cli_preparing",
+		})
+	}
+
 	// 4. Take vault snapshot BEFORE CLI runs (for diff + writeback)
 	beforeSnap, beforeIDMap, snapErr := executor.TakeSnapshotAndPathIDMap(
 		h.vaultFS, session.memberID,
@@ -255,9 +264,19 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	accumulatedThinking := ""
 	var tokenUsage json.RawMessage
 
+	cliReadySent := false
 	for event := range eventCh {
 		if event.Type != "stdout" {
 			continue
+		}
+
+		// First stdout event after cache building → send cli_ready, mark cache as built
+		if isCacheBuilding && !cliReadySent {
+			cliReadySent = true
+			cli.CacheBuilt = true
+			session.Send(map[string]interface{}{
+				"type": "cli_ready",
+			})
 		}
 
 		log.Printf("[WS-CLI] raw line: %s", event.Data[:min(len(event.Data), 200)])
