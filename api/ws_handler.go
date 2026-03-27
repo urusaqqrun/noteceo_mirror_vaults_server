@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -27,15 +26,14 @@ var upgrader = websocket.Upgrader{
 
 // WsSession represents a single WebSocket connection session.
 type WsSession struct {
-	conn           *websocket.Conn
-	memberID       string
-	sessionID      string
-	mode           string
-	taskID         string
-	status         string // idle, asking, interrupted
-	cliSessionID   string // CLI session UUID for --resume
-	mu             sync.Mutex
-	cli            *executor.StreamCLI
+	conn      *websocket.Conn
+	memberID  string
+	sessionID string
+	mode      string
+	taskID    string
+	status    string // idle, asking, interrupted
+	mu        sync.Mutex
+	cli       *executor.StreamCLI
 }
 
 // Send writes a JSON message to the WebSocket connection (thread-safe).
@@ -99,24 +97,8 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[Warmup] CLI start failed for %s: %v", memberID, err)
 			return
 		}
-		log.Printf("[Warmup] CLI started for %s (pid=%d), sending cache warmup...", memberID, cli.Pid())
-
-		ch, err := cli.SendMessage(".")
-		if err != nil {
-			log.Printf("[Warmup] warmup message failed for %s: %v", memberID, err)
-			cli.Kill()
-			return
-		}
-		for range ch {
-		}
-
-		if !cli.IsAlive() {
-			log.Printf("[Warmup] CLI died during warmup for %s", memberID)
-			return
-		}
-
 		h.cliPool.Store(memberID, cli)
-		log.Printf("[Warmup] CLI ready with warm cache for %s (pid=%d)", memberID, cli.Pid())
+		log.Printf("[Warmup] CLI ready for %s (pid=%d)", memberID, cli.Pid())
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -206,8 +188,6 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			msgs, _, err := h.chatStore.GetMessagesAfter(
 				context.Background(), sessionID, mode, "", 200)
 			if err == nil && len(msgs) > 0 {
-				cliSessionUUID := generateUUIDv4()
-
 				smList := make([]executor.SessionMessage, 0, len(msgs))
 				for _, m := range msgs {
 					smList = append(smList, executor.SessionMessage{
@@ -221,22 +201,21 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					})
 				}
 
-				if err := executor.RebuildSessionJSONL(cliSessionUUID, workDir, memberID, smList); err != nil {
+				if err := executor.RebuildSessionJSONL(sessionID, workDir, memberID, smList); err != nil {
 					log.Printf("[WS] rebuild JSONL error: %v", err)
 				} else {
-					log.Printf("[WS] rebuilt JSONL for %s (%d msgs)", cliSessionUUID, len(smList))
+					log.Printf("[WS] rebuilt JSONL for %s (%d msgs)", sessionID, len(smList))
 				}
 
-				cli, err := executor.NewStreamCLI(workDir, "chat", memberID, cliSessionUUID, 5*time.Minute)
+				cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, 5*time.Minute)
 				if err != nil {
 					log.Printf("[WS] CLI resume start failed for %s: %v", memberID, err)
 					return
 				}
 				session.mu.Lock()
 				session.cli = cli
-				session.cliSessionID = cliSessionUUID
 				session.mu.Unlock()
-				log.Printf("[WS] CLI resumed for %s (cliSession=%s)", memberID, cliSessionUUID)
+				log.Printf("[WS] CLI resumed for %s (session=%s)", memberID, sessionID)
 				return
 			}
 		}
@@ -612,21 +591,15 @@ func (h *WsHandler) ensureCLI(session *WsSession) *executor.StreamCLI {
 
 	session.mu.Lock()
 	if session.cli != nil {
-		if sid := session.cli.SessionID(); sid != "" {
-			session.cliSessionID = sid
-		}
 		session.cli.Kill()
 	}
-	resumeID := session.cliSessionID
 	session.mu.Unlock()
 
 	workDir := filepath.Join(h.vaultRoot, session.memberID)
 
-	if resumeID != "" {
-		h.rebuildSessionJSONL(session, resumeID, workDir)
-	}
+	h.rebuildSessionJSONL(session, workDir)
 
-	newCLI, err := executor.NewStreamCLI(workDir, "chat", session.memberID, resumeID, 5*time.Minute)
+	newCLI, err := executor.NewStreamCLI(workDir, "chat", session.memberID, session.sessionID, 5*time.Minute)
 	if err != nil {
 		log.Printf("[WS] CLI start failed for %s: %v", session.memberID, err)
 		return nil
@@ -641,7 +614,7 @@ func (h *WsHandler) ensureCLI(session *WsSession) *executor.StreamCLI {
 
 // rebuildSessionJSONL queries chat messages from DB and writes the .jsonl file
 // so that CLI --resume can restore the conversation.
-func (h *WsHandler) rebuildSessionJSONL(session *WsSession, cliSessionID, workDir string) {
+func (h *WsHandler) rebuildSessionJSONL(session *WsSession, workDir string) {
 	msgs, _, err := h.chatStore.GetMessagesAfter(
 		context.Background(), session.sessionID, session.mode, "", 200)
 	if err != nil {
@@ -653,7 +626,6 @@ func (h *WsHandler) rebuildSessionJSONL(session *WsSession, cliSessionID, workDi
 		return
 	}
 
-	// Convert database.ChatMessage to executor.SessionMessage
 	smList := make([]executor.SessionMessage, 0, len(msgs))
 	for _, m := range msgs {
 		smList = append(smList, executor.SessionMessage{
@@ -667,10 +639,10 @@ func (h *WsHandler) rebuildSessionJSONL(session *WsSession, cliSessionID, workDi
 		})
 	}
 
-	if err := executor.RebuildSessionJSONL(cliSessionID, workDir, session.memberID, smList); err != nil {
+	if err := executor.RebuildSessionJSONL(session.sessionID, workDir, session.memberID, smList); err != nil {
 		log.Printf("[WS] rebuild JSONL error for session %s: %v", session.sessionID, err)
 	} else {
-		log.Printf("[WS] rebuilt JSONL for CLI session %s (%d messages)", cliSessionID, len(smList))
+		log.Printf("[WS] rebuilt JSONL for session %s (%d messages)", session.sessionID, len(smList))
 	}
 }
 
@@ -914,13 +886,4 @@ func extractJWTRole(token string) string {
 		return ""
 	}
 	return claims.Role
-}
-
-func generateUUIDv4() string {
-	var b [16]byte
-	rand.Read(b[:])
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

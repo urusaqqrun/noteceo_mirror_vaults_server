@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -251,13 +252,18 @@ type StreamCLI struct {
 
 // NewStreamCLI 啟動帶有 streaming 功能的長駐 CLI
 func NewStreamCLI(workDir, scope, userID, resumeSessionID string, idleTTL time.Duration) (*StreamCLI, error) {
+	vaultClaudeMD := filepath.Join(workDir, "CLAUDE.md")
 	args := []string{
+		"--bare",
 		"--print",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
 		"--input-format", "stream-json",
 		"--verbose",
 		"--dangerously-skip-permissions",
+		"--mcp-config", "/home/mirror/.claude/settings.json",
+		"--append-system-prompt-file", "/home/mirror/.claude/CLAUDE.md",
+		"--append-system-prompt-file", vaultClaudeMD,
 	}
 
 	if resumeSessionID != "" {
