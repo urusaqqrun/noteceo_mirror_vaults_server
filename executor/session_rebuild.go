@@ -1,8 +1,6 @@
 package executor
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -172,12 +170,9 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 }
 
 // encodeProjectPath produces the directory name Claude CLI uses for a project.
-// It takes the absolute workDir path and encodes it as a filesystem-safe string.
-// The CLI uses the SHA-256 hex prefix of the absolute path.
+// CLI 的編碼方式：把絕對路徑的 "/" 替換成 "-"，開頭保留 "-"。
+// 例如 /vaults/abc123 → -vaults-abc123
 func encodeProjectPath(workDir string) string {
-	// Claude CLI encodes project paths by replacing path separators with hyphens
-	// and prefixing with a hash for uniqueness
 	absPath := filepath.Clean(workDir)
-	h := sha256.Sum256([]byte(absPath))
-	return hex.EncodeToString(h[:16])
+	return strings.ReplaceAll(absPath, "/", "-")
 }

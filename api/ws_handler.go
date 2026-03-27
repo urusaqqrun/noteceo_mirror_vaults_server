@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -189,7 +190,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			msgs, _, err := h.chatStore.GetMessagesAfter(
 				context.Background(), sessionID, mode, "", 200)
 			if err == nil && len(msgs) > 0 {
-				cliSessionUUID := fmt.Sprintf("%x", time.Now().UnixNano())
+				cliSessionUUID := generateUUIDv4()
 
 				smList := make([]executor.SessionMessage, 0, len(msgs))
 				for _, m := range msgs {
@@ -897,4 +898,13 @@ func extractJWTRole(token string) string {
 		return ""
 	}
 	return claims.Role
+}
+
+func generateUUIDv4() string {
+	var b [16]byte
+	rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
