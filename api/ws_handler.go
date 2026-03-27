@@ -54,6 +54,13 @@ type StreamTaskExecutor interface {
 	Cancel(taskID string) error
 }
 
+// warmSnapshot 快取的快照資料，用於 warmup → WS session 傳遞
+type warmSnapshot struct {
+	snap  map[string]executor.FileSnapshot
+	idMap map[string]string
+	time  time.Time
+}
+
 // WsHandler is the WebSocket endpoint handler.
 type WsHandler struct {
 	executor  StreamTaskExecutor
@@ -63,6 +70,7 @@ type WsHandler struct {
 	vaultFS   mirror.VaultFS
 	sessions  sync.Map // sessionKey -> *WsSession
 	cliPool   sync.Map // memberID -> *executor.StreamCLI (warmup pool)
+	snapPool  sync.Map // memberID -> *warmSnapshot (warmup snapshot pool)
 }
 
 // NewWsHandler creates a new WsHandler.
@@ -103,8 +111,17 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.cliPool.Store(memberID, cli)
-		log.Printf("[CacheProfile] Warmup DONE — %dms, member=%s, pid=%d",
-			time.Since(warmupStart).Milliseconds(), memberID, cli.Pid())
+
+		snapStart := time.Now()
+		snap, idMap, snapErr := executor.TakeSnapshotAndPathIDMap(h.vaultFS, memberID)
+		if snapErr != nil {
+			log.Printf("[Warmup] snapshot failed for %s: %v", memberID, snapErr)
+		} else {
+			h.snapPool.Store(memberID, &warmSnapshot{snap: snap, idMap: idMap, time: time.Now()})
+		}
+		log.Printf("[CacheProfile] Warmup DONE — cli=%dms, snapshot=%dms, files=%d, member=%s, pid=%d",
+			time.Since(warmupStart).Milliseconds(), time.Since(snapStart).Milliseconds(),
+			len(snap), memberID, cli.Pid())
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -174,15 +191,28 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		wsCliStart := time.Now()
 		workDir := filepath.Join(h.vaultRoot, memberID)
 
+		// 嘗試從 snapPool 取得 warmup 時預拍的快照
+		loadWarmSnapshot := func() {
+			if val, loaded := h.snapPool.LoadAndDelete(memberID); loaded {
+				ws := val.(*warmSnapshot)
+				session.mu.Lock()
+				session.cachedSnap = ws.snap
+				session.cachedIDMap = ws.idMap
+				session.snapTime = ws.time
+				session.mu.Unlock()
+				log.Printf("[CacheProfile] WS goroutine: loaded warm snapshot — files=%d", len(ws.snap))
+			}
+		}
+
 		if isNew {
 			if val, loaded := h.cliPool.LoadAndDelete(memberID); loaded {
 				if cli, ok := val.(*executor.StreamCLI); ok && cli.IsAlive() {
 					session.mu.Lock()
 					session.cli = cli
 					session.mu.Unlock()
+					loadWarmSnapshot()
 					log.Printf("[CacheProfile] WS goroutine: reused warm CLI — %dms, pid=%d",
 						time.Since(wsCliStart).Milliseconds(), cli.Pid())
-					h.precomputeSnapshot(session)
 					return
 				}
 			}
@@ -194,9 +224,9 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			session.mu.Lock()
 			session.cli = cli
 			session.mu.Unlock()
+			loadWarmSnapshot()
 			log.Printf("[CacheProfile] WS goroutine: new CLI for new session — %dms, pid=%d",
 				time.Since(wsCliStart).Milliseconds(), cli.Pid())
-			h.precomputeSnapshot(session)
 			return
 		}
 
@@ -236,9 +266,9 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				session.mu.Lock()
 				session.cli = cli
 				session.mu.Unlock()
+				loadWarmSnapshot()
 				log.Printf("[CacheProfile] WS goroutine: CLI resumed — total %dms, session=%s",
 					time.Since(wsCliStart).Milliseconds(), sessionID)
-				h.precomputeSnapshot(session)
 				return
 			}
 		}
@@ -251,9 +281,9 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		session.mu.Lock()
 		session.cli = cli
 		session.mu.Unlock()
+		loadWarmSnapshot()
 		log.Printf("[CacheProfile] WS goroutine: new CLI (no history) — %dms, pid=%d",
 			time.Since(wsCliStart).Milliseconds(), cli.Pid())
-		h.precomputeSnapshot(session)
 	}()
 
 	// Read loop
@@ -774,24 +804,6 @@ func (h *WsHandler) diffAndNotify(
 	return true
 }
 
-
-// precomputeSnapshot 背景預拍快照，讓第一則訊息不用等。
-func (h *WsHandler) precomputeSnapshot(session *WsSession) {
-	start := time.Now()
-	snap, idMap, err := executor.TakeSnapshotAndPathIDMap(h.vaultFS, session.memberID)
-	if err != nil {
-		log.Printf("[CacheProfile] precomputeSnapshot FAILED — %dms, err=%v",
-			time.Since(start).Milliseconds(), err)
-		return
-	}
-	session.mu.Lock()
-	session.cachedSnap = snap
-	session.cachedIDMap = idMap
-	session.snapTime = time.Now()
-	session.mu.Unlock()
-	log.Printf("[CacheProfile] precomputeSnapshot DONE — %dms, files=%d",
-		time.Since(start).Milliseconds(), len(snap))
-}
 
 func (h *WsHandler) handleInterrupt(session *WsSession) {
 	session.mu.Lock()
