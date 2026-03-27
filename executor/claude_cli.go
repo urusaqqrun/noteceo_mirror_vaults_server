@@ -287,10 +287,23 @@ func NewStreamCLI(workDir, scope, userID, resumeSessionID string, idleTTL time.D
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start claude cli: %w", err)
 	}
+
+	// 背景讀取 stderr 並寫入 log，避免 CLI 錯誤被靜默吞掉
+	go func() {
+		stderrScanner := bufio.NewScanner(stderrPipe)
+		stderrScanner.Buffer(make([]byte, 64*1024), 64*1024)
+		for stderrScanner.Scan() {
+			log.Printf("[StreamCLI-stderr] pid=%d: %s", cmd.Process.Pid, stderrScanner.Text())
+		}
+	}()
 
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
