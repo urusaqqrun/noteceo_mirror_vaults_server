@@ -70,8 +70,8 @@ func (h *SchemaHandler) SyncSchemas(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Update user-level CLAUDE.md with aiHints from schemas
-	updateUserClaudeMD(h.fs, memberID, req.Schemas)
+	// Update user-level CLAUDE.md with aiHints from all .schemas/ files
+	updateUserClaudeMD(h.fs, memberID)
 
 	log.Printf("[SchemaHandler] synced %d schemas for %s", len(req.Schemas), memberID)
 
@@ -82,36 +82,52 @@ func (h *SchemaHandler) SyncSchemas(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateUserClaudeMD updates the user-level CLAUDE.md in the vault with aiHints
-// extracted from the pushed schemas. It replaces content between AIHINTS markers,
-// or creates the file with markers if it doesn't exist.
-func updateUserClaudeMD(vaultFS mirror.VaultFS, memberID string, schemas map[string]interface{}) {
-	// Build aiHints text from all schemas that have aiHints
+// updateUserClaudeMD updates the user-level CLAUDE.md in the vault with aiHints.
+// It reads ALL .schemas/*.json files to rebuild the complete AIHINTS section,
+// ensuring hints from other schema types are preserved across individual pushes.
+func updateUserClaudeMD(vaultFS mirror.VaultFS, memberID string) {
+	schemasDir := filepath.Join(memberID, ".schemas")
+
+	// Read all .schemas/*.json files to rebuild the complete aiHints
 	var hintsBuilder strings.Builder
-	for typeName, schema := range schemas {
-		schemaMap, ok := schema.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		aiHints, ok := schemaMap["aiHints"]
-		if !ok {
-			continue
-		}
-		// aiHints can be a string or []interface{}
-		switch v := aiHints.(type) {
-		case string:
-			if v != "" {
-				hintsBuilder.WriteString(fmt.Sprintf("### %s\n%s\n\n", typeName, v))
+	entries, err := vaultFS.ListDir(schemasDir)
+	if err == nil {
+		// Sort entries for deterministic output
+		sortedNames := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+				sortedNames = append(sortedNames, entry.Name())
 			}
-		case []interface{}:
-			if len(v) > 0 {
-				hintsBuilder.WriteString(fmt.Sprintf("### %s\n", typeName))
-				for _, hint := range v {
-					if s, ok := hint.(string); ok {
-						hintsBuilder.WriteString(fmt.Sprintf("- %s\n", s))
-					}
+		}
+		for _, name := range sortedNames {
+			data, err := vaultFS.ReadFile(filepath.Join(schemasDir, name))
+			if err != nil {
+				continue
+			}
+			var schemaMap map[string]interface{}
+			if json.Unmarshal(data, &schemaMap) != nil {
+				continue
+			}
+			aiHints, ok := schemaMap["aiHints"]
+			if !ok {
+				continue
+			}
+			typeName := strings.TrimSuffix(name, ".json")
+			switch v := aiHints.(type) {
+			case string:
+				if v != "" {
+					hintsBuilder.WriteString(fmt.Sprintf("### %s\n%s\n\n", typeName, v))
 				}
-				hintsBuilder.WriteString("\n")
+			case []interface{}:
+				if len(v) > 0 {
+					hintsBuilder.WriteString(fmt.Sprintf("### %s\n", typeName))
+					for _, hint := range v {
+						if s, ok := hint.(string); ok {
+							hintsBuilder.WriteString(fmt.Sprintf("- %s\n", s))
+						}
+					}
+					hintsBuilder.WriteString("\n")
+				}
 			}
 		}
 	}
