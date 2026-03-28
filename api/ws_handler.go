@@ -52,10 +52,19 @@ type SnapshotStore interface {
 	SnapshotExists(ctx context.Context, memberID string) (bool, error)
 }
 
+// ItemWriter combines the writeback interfaces needed to sync vault changes to the database.
+// PgStore satisfies this interface.
+type ItemWriter interface {
+	executor.DataWriter
+	executor.USNReader
+	executor.USNIncrementer
+}
+
 // WsHandler is the WebSocket endpoint handler.
 type WsHandler struct {
 	chatStore     ChatStore
 	snapshotStore SnapshotStore
+	itemWriter    ItemWriter
 	vaultRoot     string
 	vaultFS       mirror.VaultFS
 	sessions      sync.Map // sessionKey -> *WsSession
@@ -63,10 +72,11 @@ type WsHandler struct {
 }
 
 // NewWsHandler creates a new WsHandler.
-func NewWsHandler(chatStore ChatStore, snapshotStore SnapshotStore, vaultRoot string, vaultFS mirror.VaultFS) *WsHandler {
+func NewWsHandler(chatStore ChatStore, snapshotStore SnapshotStore, itemWriter ItemWriter, vaultRoot string, vaultFS mirror.VaultFS) *WsHandler {
 	return &WsHandler{
 		chatStore:     chatStore,
 		snapshotStore: snapshotStore,
+		itemWriter:    itemWriter,
 		vaultRoot:     vaultRoot,
 		vaultFS:       vaultFS,
 	}
@@ -644,6 +654,27 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				len(diff.Created), len(diff.Modified), len(diff.Deleted), len(diff.Moved))
 
 			if hasChanges {
+				// Writeback: convert vault file diffs to DB items
+				movedEntries := make([]mirror.MovedFileEntry, len(diff.Moved))
+				for i, m := range diff.Moved {
+					movedEntries[i] = mirror.MovedFileEntry{OldPath: m.OldPath, NewPath: m.NewPath}
+				}
+				importer := mirror.NewImporter(h.vaultFS)
+				entries, importErr := importer.ProcessDiff(
+					session.memberID, diff.Created, diff.Modified, diff.Deleted, movedEntries, beforeIDMap,
+				)
+				if importErr != nil {
+					log.Printf("[WS] importer.ProcessDiff error: %v", importErr)
+				} else if len(entries) > 0 {
+					wbResult := executor.WriteBack(
+						context.Background(), h.itemWriter, h.itemWriter, h.itemWriter,
+						session.memberID, entries, 0,
+					)
+					log.Printf("[WS] WriteBack: +%d ~%d mv%d -%d skip%d err%d",
+						wbResult.Created, wbResult.Updated, wbResult.Moved,
+						wbResult.Deleted, wbResult.Skipped, wbResult.Errors)
+				}
+
 				h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)
 				session.Send(map[string]interface{}{
 					"type":     "vault_changed",
