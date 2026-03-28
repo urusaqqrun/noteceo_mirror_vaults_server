@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -255,6 +256,11 @@ type StreamCLI struct {
 func NewStreamCLI(workDir, scope, userID, sessionID, model string, resume bool, idleTTL time.Duration) (*StreamCLI, error) {
 	funcStart := time.Now()
 
+	// 清理可能殘留的 session lock file（CLI 被 kill 後 lock 不會自動清除）
+	if sessionID != "" {
+		cleanStaleSessionLock(workDir, sessionID)
+	}
+
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -441,6 +447,22 @@ func (s *StreamCLI) SessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessionID
+}
+
+// cleanStaleSessionLock removes the session lock file left by a killed CLI process.
+// Claude CLI creates a lock at ~/.claude/projects/<encoded-workDir>/sessions/<sessionID>.lock
+// When the CLI is killed (idle timeout, server restart), the lock file persists on EFS
+// and blocks any future CLI startup with the same session ID.
+func cleanStaleSessionLock(workDir, sessionID string) {
+	encodedWorkDir := encodeProjectPath(workDir)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	lockPath := filepath.Join(homeDir, ".claude", "projects", encodedWorkDir, "sessions", sessionID+".lock")
+	if err := os.Remove(lockPath); err == nil {
+		log.Printf("[StreamCLI] cleaned stale lock file: %s", lockPath)
+	}
 }
 
 func (s *StreamCLI) resetIdleTimer() {
