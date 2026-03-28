@@ -16,6 +16,7 @@ type mockWriter struct {
 
 	upsertItemDocs []Doc
 	deleteItemIDs  []string
+	nextUSN        int
 }
 
 func (m *mockWriter) UpsertItem(_ context.Context, _ string, doc Doc) error {
@@ -32,29 +33,11 @@ func (m *mockWriter) DeleteItemDoc(_ context.Context, _ string, docID string, _ 
 	return nil
 }
 
-type mockUSNReader struct {
-	byDocID map[string]int
-}
-
-func (m *mockUSNReader) GetDocUSN(_ context.Context, _ string, _ string, docID string) (int, error) {
-	if usn, ok := m.byDocID[docID]; ok {
-		return usn, nil
-	}
-	return 0, nil
-}
-
-type mockUSNIncrementer struct {
-	mu    sync.Mutex
-	next  int
-	calls int
-}
-
-func (m *mockUSNIncrementer) IncrementUSN(_ context.Context, _ string) (int, error) {
+func (m *mockWriter) IncrementUSN(_ context.Context, _ string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.next++
-	m.calls++
-	return m.next, nil
+	m.nextUSN++
+	return m.nextUSN, nil
 }
 
 func cloneDoc(doc Doc) Doc {
@@ -118,7 +101,7 @@ func TestE2E_FullRoundTrip_ExportDiffImportWriteback(t *testing.T) {
 	}
 
 	writer := &mockWriter{}
-	result := WriteBack(context.Background(), writer, nil, nil, "user1", entries, 0)
+	result := WriteBack(context.Background(), writer, "user1", entries)
 	if result.Errors != 0 {
 		t.Fatalf("errors: got %d, want 0", result.Errors)
 	}
@@ -130,33 +113,6 @@ func TestE2E_FullRoundTrip_ExportDiffImportWriteback(t *testing.T) {
 	}
 	if len(writer.upsertItemDocs) != 2 {
 		t.Fatalf("upsert item docs: got %d, want 2", len(writer.upsertItemDocs))
-	}
-}
-
-func TestE2E_ConcurrentConflict_SkipsNewerDBDoc(t *testing.T) {
-	entries := []mirror.ImportEntry{
-		{
-			Action:     mirror.ImportActionUpdate,
-			Collection: "item",
-			ItemData: &mirror.ItemMirrorData{
-				ID:       "n1",
-				Name:     "會議A",
-				ItemType: "NOTE",
-				Fields: map[string]interface{}{
-					"parentID": "f1",
-				},
-			},
-		},
-	}
-	writer := &mockWriter{}
-	reader := &mockUSNReader{byDocID: map[string]int{"n1": 9}}
-
-	result := WriteBack(context.Background(), writer, reader, nil, "user1", entries, 5)
-	if result.Skipped != 1 {
-		t.Fatalf("skipped: got %d, want 1", result.Skipped)
-	}
-	if len(writer.upsertItemDocs) != 0 {
-		t.Fatal("conflicted doc should not be written back")
 	}
 }
 

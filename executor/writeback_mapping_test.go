@@ -31,25 +31,8 @@ func TestItemDataToItemDoc_BasicMapping(t *testing.T) {
 	if fields["color"] != "red" {
 		t.Errorf("fields.color: got %v", fields["color"])
 	}
-	if fields["usn"] != 10 {
-		t.Errorf("fields.usn: got %v", fields["usn"])
-	}
 	if _, ok := fields["updatedAt"]; !ok {
 		t.Error("fields.updatedAt should be set")
-	}
-}
-
-func TestItemDataToItemDoc_ZeroUSN_NotSet(t *testing.T) {
-	data := &mirror.ItemMirrorData{
-		ID:       "item2",
-		Name:     "no-usn",
-		ItemType: "NOTE",
-		Fields:   map[string]interface{}{},
-	}
-	doc := itemDataToItemDoc(data, 0)
-	fields := doc["fields"].(Doc)
-	if _, ok := fields["usn"]; ok {
-		t.Error("usn should not be set when value is 0")
 	}
 }
 

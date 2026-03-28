@@ -52,19 +52,12 @@ type SnapshotStore interface {
 	SnapshotExists(ctx context.Context, memberID string) (bool, error)
 }
 
-// ItemWriter combines the writeback interfaces needed to sync vault changes to the database.
-// PgStore satisfies this interface.
-type ItemWriter interface {
-	executor.DataWriter
-	executor.USNReader
-	executor.USNIncrementer
-}
 
 // WsHandler is the WebSocket endpoint handler.
 type WsHandler struct {
 	chatStore     ChatStore
 	snapshotStore SnapshotStore
-	itemWriter    ItemWriter
+	itemWriter    executor.DataWriter
 	vaultRoot     string
 	vaultFS       mirror.VaultFS
 	sessions      sync.Map // sessionKey -> *WsSession
@@ -72,7 +65,7 @@ type WsHandler struct {
 }
 
 // NewWsHandler creates a new WsHandler.
-func NewWsHandler(chatStore ChatStore, snapshotStore SnapshotStore, itemWriter ItemWriter, vaultRoot string, vaultFS mirror.VaultFS) *WsHandler {
+func NewWsHandler(chatStore ChatStore, snapshotStore SnapshotStore, itemWriter executor.DataWriter, vaultRoot string, vaultFS mirror.VaultFS) *WsHandler {
 	return &WsHandler{
 		chatStore:     chatStore,
 		snapshotStore: snapshotStore,
@@ -667,12 +660,12 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 					log.Printf("[WS] importer.ProcessDiff error: %v", importErr)
 				} else if len(entries) > 0 {
 					wbResult := executor.WriteBack(
-						context.Background(), h.itemWriter, h.itemWriter, h.itemWriter,
-						session.memberID, entries, 0,
+						context.Background(), h.itemWriter,
+						session.memberID, entries,
 					)
-					log.Printf("[WS] WriteBack: +%d ~%d mv%d -%d skip%d err%d",
+					log.Printf("[WS] WriteBack: +%d ~%d mv%d -%d err%d",
 						wbResult.Created, wbResult.Updated, wbResult.Moved,
-						wbResult.Deleted, wbResult.Skipped, wbResult.Errors)
+						wbResult.Deleted, wbResult.Errors)
 				}
 
 				h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)

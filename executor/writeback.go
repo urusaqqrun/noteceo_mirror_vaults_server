@@ -20,22 +20,8 @@ type Doc = map[string]interface{}
 // DataWriter 資料庫寫入能力（由 database 層實作）
 type DataWriter interface {
 	UpsertItem(ctx context.Context, userID string, doc Doc) error
-	DeleteItemDoc(ctx context.Context, userID, docID string, usn int) error
-}
-
-// USNReader 查詢文件當前版本號（衝突判定用）
-type USNReader interface {
-	GetDocUSN(ctx context.Context, userID, collection, docID string) (int, error)
-}
-
-// USNIncrementer 遞增用戶版本號（回寫時為每個文件取得新版本）
-type USNIncrementer interface {
+	DeleteItemDoc(ctx context.Context, userID, docID string, version int) error
 	IncrementUSN(ctx context.Context, userID string) (int, error)
-}
-
-// USNSyncer 回寫完成後的清理動作（PostgreSQL 模式下為 no-op）
-type USNSyncer interface {
-	SyncUserUSN(ctx context.Context, userID string) error
 }
 
 // WriteBackResult 回寫統計
@@ -44,13 +30,12 @@ type WriteBackResult struct {
 	Updated int
 	Moved   int
 	Deleted int
-	Skipped int
 	Errors  int
 }
 
 // WriteBack 將 ImportEntry 清單寫回資料庫，使用 errgroup 並行處理（上限 8）。
-func WriteBack(ctx context.Context, writer DataWriter, usnReader USNReader, usnInc USNIncrementer, userID string, entries []mirror.ImportEntry, aiStartUSN int) WriteBackResult {
-	var created, updated, moved, deleted, skipped, errors int64
+func WriteBack(ctx context.Context, writer DataWriter, userID string, entries []mirror.ImportEntry) WriteBackResult {
+	var created, updated, moved, deleted, errors int64
 
 	g, gCtx := errgroup.WithContext(ctx)
 	g.SetLimit(8)
@@ -62,50 +47,21 @@ func WriteBack(ctx context.Context, writer DataWriter, usnReader USNReader, usnI
 				return nil
 			}
 
-			if usnReader != nil && e.Action != mirror.ImportActionCreate {
-				docID := resolveDocID(e)
-				if docID != "" {
-					dbUSN, usnErr := usnReader.GetDocUSN(gCtx, userID, e.Collection, docID)
-					if usnErr != nil {
-						log.Printf("[WriteBack] GetDocUSN error (%s/%s): %v", e.Collection, docID, usnErr)
-					} else if dbUSN > aiStartUSN {
-						log.Printf("[WriteBack] conflict skip %s %s: user modified during AI task (dbUSN=%d > aiStartUSN=%d)",
-							e.Action, e.Path, dbUSN, aiStartUSN)
-						atomic.AddInt64(&skipped, 1)
-						return nil
-					}
-				}
+			version, vErr := writer.IncrementUSN(gCtx, userID)
+			if vErr != nil {
+				log.Printf("[WriteBack] IncrementUSN error: %v", vErr)
+				atomic.AddInt64(&errors, 1)
+				return nil
 			}
 
 			var err error
-
 			if e.Action == mirror.ImportActionDelete {
-				delUSN := 0
-				if usnInc != nil {
-					usn, usnErr := usnInc.IncrementUSN(gCtx, userID)
-					if usnErr != nil {
-						log.Printf("[WriteBack] IncrementUSN error: %v", usnErr)
-						atomic.AddInt64(&errors, 1)
-						return nil
-					}
-					delUSN = usn
-				}
-				err = deleteEntry(gCtx, writer, userID, e, delUSN)
+				err = deleteEntry(gCtx, writer, userID, e, version)
 				if err == nil {
 					atomic.AddInt64(&deleted, 1)
 				}
 			} else {
-				newUSN := 0
-				if usnInc != nil {
-					usn, usnErr := usnInc.IncrementUSN(gCtx, userID)
-					if usnErr != nil {
-						log.Printf("[WriteBack] IncrementUSN error: %v", usnErr)
-						atomic.AddInt64(&errors, 1)
-						return nil
-					}
-					newUSN = usn
-				}
-				err = upsertEntry(gCtx, writer, userID, e, newUSN)
+				err = upsertEntry(gCtx, writer, userID, e, version)
 				if err == nil {
 					switch e.Action {
 					case mirror.ImportActionCreate:
@@ -133,7 +89,6 @@ func WriteBack(ctx context.Context, writer DataWriter, usnReader USNReader, usnI
 		Updated: int(updated),
 		Moved:   int(moved),
 		Deleted: int(deleted),
-		Skipped: int(skipped),
 		Errors:  int(errors),
 	}
 }
@@ -162,13 +117,10 @@ func upsertItemEntry(ctx context.Context, w DataWriter, userID string, e mirror.
 	return w.UpsertItem(ctx, userID, doc)
 }
 
-func itemDataToItemDoc(d *mirror.ItemMirrorData, usn int) Doc {
+func itemDataToItemDoc(d *mirror.ItemMirrorData, version int) Doc {
 	fields := Doc{}
 	for k, v := range d.Fields {
 		fields[k] = v
-	}
-	if usn > 0 {
-		fields["usn"] = usn
 	}
 	fields["updatedAt"] = time.Now().UnixMilli()
 	return Doc{

@@ -227,28 +227,8 @@ func (s *PgStore) DeleteDocument(ctx context.Context, userID, collection, docID 
 }
 
 // ---------------------------------------------------------------------------
-// USNReader 介面（衝突判定用）
 // ---------------------------------------------------------------------------
-
-func (s *PgStore) GetDocUSN(ctx context.Context, userID, collection, docID string) (int, error) {
-	var version int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT bi.version FROM base_items bi
-		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
-		 WHERE bi.id = $1 AND ip.user_id = $2 AND bi.deleted_at IS NULL`,
-		docID, userID,
-	).Scan(&version)
-	if err == sql.ErrNoRows {
-		return -1, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return version, nil
-}
-
-// ---------------------------------------------------------------------------
-// USNIncrementer 介面（版本號遞增）
+// IncrementUSN（版本號遞增）
 // 使用 Redis INCR 維持與 golang_service 相容的 usn:{ownerID} key
 // ---------------------------------------------------------------------------
 
