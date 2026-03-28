@@ -37,6 +37,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "WebSearch|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\":\"block\",\"reason\":\"禁止使用內建 WebSearch/WebFetch，請改用 MCP web_search 工具（serper-search server）\"}'",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
