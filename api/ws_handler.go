@@ -30,6 +30,7 @@ type WsSession struct {
 	memberID  string
 	sessionID string
 	mode      string
+	model     string
 	taskID    string
 	status    string // idle, asking, interrupted
 	mu        sync.Mutex
@@ -52,6 +53,17 @@ type SnapshotStore interface {
 	SnapshotExists(ctx context.Context, memberID string) (bool, error)
 }
 
+// warmCLI 預熱池中的 CLI，附帶啟動時使用的模型
+type warmCLI struct {
+	cli   *executor.StreamCLI
+	model string
+}
+
+// cachedSnapshot 記憶體中快取的 snapshot（避免每句都查 DB）
+type cachedSnapshot struct {
+	snap  map[string]executor.FileSnapshot
+	idMap map[string]string
+}
 
 // WsHandler is the WebSocket endpoint handler.
 type WsHandler struct {
@@ -61,7 +73,8 @@ type WsHandler struct {
 	vaultRoot     string
 	vaultFS       mirror.VaultFS
 	sessions      sync.Map // sessionKey -> *WsSession
-	cliPool       sync.Map // memberID -> *executor.StreamCLI (warmup pool)
+	cliPool       sync.Map // memberID -> *warmCLI (warmup pool)
+	snapCache     sync.Map // memberID -> *cachedSnapshot
 }
 
 // NewWsHandler creates a new WsHandler.
@@ -88,13 +101,18 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "memberID required", 400)
 		return
 	}
+	model := r.URL.Query().Get("model")
 
 	if val, ok := h.cliPool.Load(memberID); ok {
-		if cli, ok := val.(*executor.StreamCLI); ok && cli.IsAlive() {
+		wc := val.(*warmCLI)
+		if wc.cli.IsAlive() && wc.model == model {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
 			json.NewEncoder(w).Encode(map[string]string{"status": "already_warm"})
 			return
+		}
+		if wc.cli.IsAlive() {
+			wc.cli.Kill()
 		}
 		h.cliPool.Delete(memberID)
 	}
@@ -102,14 +120,14 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		warmupStart := time.Now()
 		workDir := filepath.Join(h.vaultRoot, memberID)
-		cli, err := executor.NewStreamCLI(workDir, "chat", memberID, "", false, 5*time.Minute)
+		cli, err := executor.NewStreamCLI(workDir, "chat", memberID, "", model, false, 5*time.Minute)
 		if err != nil {
 			log.Printf("[Warmup] CLI start failed for %s: %v", memberID, err)
 			return
 		}
-		h.cliPool.Store(memberID, cli)
-		log.Printf("[CacheProfile] Warmup DONE — %dms, member=%s, pid=%d",
-			time.Since(warmupStart).Milliseconds(), memberID, cli.Pid())
+		h.cliPool.Store(memberID, &warmCLI{cli: cli, model: model})
+		log.Printf("[CacheProfile] Warmup DONE — %dms, member=%s, model=%s, pid=%d",
+			time.Since(warmupStart).Milliseconds(), memberID, model, cli.Pid())
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -123,6 +141,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	memberID := q.Get("memberID")
 	sessionID := q.Get("sessionID")
 	mode := q.Get("mode")
+	model := q.Get("model")
 	token := q.Get("token")
 
 	if memberID == "" {
@@ -151,6 +170,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		memberID:  memberID,
 		sessionID: sessionID,
 		mode:      mode,
+		model:     model,
 		status:    "idle",
 	}
 	sessionKey := memberID + ":" + sessionID
@@ -180,16 +200,21 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		if isNew {
 			if val, loaded := h.cliPool.LoadAndDelete(memberID); loaded {
-				if cli, ok := val.(*executor.StreamCLI); ok && cli.IsAlive() {
+				wc := val.(*warmCLI)
+				if wc.cli.IsAlive() && wc.model == model {
 					session.mu.Lock()
-					session.cli = cli
+					session.cli = wc.cli
 					session.mu.Unlock()
-					log.Printf("[CacheProfile] WS goroutine: reused warm CLI — %dms, pid=%d",
-						time.Since(wsCliStart).Milliseconds(), cli.Pid())
+					log.Printf("[CacheProfile] WS goroutine: reused warm CLI — %dms, model=%s, pid=%d",
+						time.Since(wsCliStart).Milliseconds(), model, wc.cli.Pid())
 					return
 				}
+				if wc.cli.IsAlive() {
+					wc.cli.Kill()
+				}
+				log.Printf("[WS] warmup model mismatch (pool=%s, req=%s), creating new CLI", wc.model, model)
 			}
-			cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, false, 5*time.Minute)
+			cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, model, false, 5*time.Minute)
 			if err != nil {
 				log.Printf("[WS] CLI start failed for %s: %v", memberID, err)
 				return
@@ -231,9 +256,9 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						time.Since(rebuildStart).Milliseconds(), len(smList))
 				}
 
-				cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, true, 5*time.Minute)
-				if err != nil {
-					log.Printf("[WS] CLI resume start failed for %s: %v", memberID, err)
+			cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, model, true, 5*time.Minute)
+			if err != nil {
+				log.Printf("[WS] CLI resume start failed for %s: %v", memberID, err)
 					return
 				}
 				session.mu.Lock()
@@ -245,7 +270,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, false, 5*time.Minute)
+		cli, err := executor.NewStreamCLI(workDir, "chat", memberID, sessionID, model, false, 5*time.Minute)
 		if err != nil {
 			log.Printf("[WS] CLI start failed for %s: %v", memberID, err)
 			return
@@ -362,22 +387,29 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		})
 	}
 
-	// 4. snapshot_before: read from DB
-	snapBeforeStart := time.Now()
-	beforeSnap, beforeIDMap, snapErr := h.loadBeforeSnapshot(session.memberID)
-	if snapErr != nil {
-		log.Printf("[WS] snapshot before error: %v", snapErr)
-	} else {
-		log.Printf("[CacheProfile] snapshot_before — %dms, files=%d",
-			time.Since(snapBeforeStart).Milliseconds(), len(beforeSnap))
+	// 4. snapshot_before: 背景載入（結果只在 streaming 結束後才需要）
+	type snapBeforeResult struct {
+		snap  map[string]executor.FileSnapshot
+		idMap map[string]string
+		err   error
 	}
+	snapCh := make(chan snapBeforeResult, 1)
+	go func() {
+		snapBeforeStart := time.Now()
+		snap, idMap, err := h.loadBeforeSnapshot(session.memberID)
+		if err != nil {
+			log.Printf("[WS] snapshot before error: %v", err)
+		} else {
+			log.Printf("[CacheProfile] snapshot_before — %dms, files=%d",
+				time.Since(snapBeforeStart).Milliseconds(), len(snap))
+		}
+		snapCh <- snapBeforeResult{snap, idMap, err}
+	}()
 
-	// 5. Send message to StreamCLI
-	// 組裝完整指令：messageText + pageContext + attachedItems metadata
+	// 5. Send message to StreamCLI（不再被 snapshot 阻塞）
 	pageCtx, _ := msg["pageContext"].(map[string]interface{})
 	instruction := buildInstruction(messageText, msgObj, pageCtx)
 
-	// 檢查是否有圖片附件，有的話組成多模態 content blocks
 	var cliContent interface{} = instruction
 	if msgObj != nil {
 		if blocks := buildContentBlocks(instruction, msgObj); blocks != nil {
@@ -631,66 +663,80 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		"token_usage":    tokenUsage,
 	})
 
-	// 9. snapshot_after: incremental EFS scan + diff + DB update
-	if snapErr == nil {
-		snapAfterStart := time.Now()
-		afterSnap, afterIDMap, afterErr := executor.TakeIncrementalSnapshot(
-			h.vaultFS, session.memberID, beforeSnap, beforeIDMap,
-		)
-		if afterErr != nil {
-			log.Printf("[WS] incremental snapshot after error: %v", afterErr)
-		} else {
-			diff := executor.ComputeDiff(beforeSnap, afterSnap)
-			hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
-			log.Printf("[CacheProfile] snapshot_after INCREMENTAL+diff — %dms, changed=%v, +%d ~%d -%d mv%d",
-				time.Since(snapAfterStart).Milliseconds(), hasChanges,
-				len(diff.Created), len(diff.Modified), len(diff.Deleted), len(diff.Moved))
-
-			if hasChanges {
-				// Writeback: convert vault file diffs to DB items
-				movedEntries := make([]mirror.MovedFileEntry, len(diff.Moved))
-				for i, m := range diff.Moved {
-					movedEntries[i] = mirror.MovedFileEntry{OldPath: m.OldPath, NewPath: m.NewPath}
-				}
-				importer := mirror.NewImporter(h.vaultFS)
-				entries, importErr := importer.ProcessDiff(
-					session.memberID, diff.Created, diff.Modified, diff.Deleted, movedEntries, beforeIDMap,
-				)
-				if importErr != nil {
-					log.Printf("[WS] importer.ProcessDiff error: %v", importErr)
-				} else if len(entries) > 0 {
-					wbResult := executor.WriteBack(
-						context.Background(), h.itemWriter,
-						session.memberID, entries,
-					)
-					log.Printf("[WS] WriteBack: +%d ~%d mv%d -%d err%d",
-						wbResult.Created, wbResult.Updated, wbResult.Moved,
-						wbResult.Deleted, wbResult.Errors)
-				}
-
-				h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)
-				session.Send(map[string]interface{}{
-					"type":     "vault_changed",
-					"memberID": session.memberID,
-				})
-			}
-		}
-	}
-
 	log.Printf("[CacheProfile] handleMessage DONE — total=%dms, member=%s",
 		time.Since(handleStart).Milliseconds(), session.memberID)
 
-	// 10. Generate session title (fire-and-forget)
-	go h.maybeGenerateTitle(session, messageText, accumulatedText)
+	// 9. snapshot_after + title：全部在背景執行，不阻塞下一次 handleMessage
+	go func() {
+		snapBefore := <-snapCh
+		if snapBefore.err == nil {
+			snapAfterStart := time.Now()
+			afterSnap, afterIDMap, afterErr := executor.TakeIncrementalSnapshot(
+				h.vaultFS, session.memberID, snapBefore.snap, snapBefore.idMap,
+			)
+			if afterErr != nil {
+				log.Printf("[WS] incremental snapshot after error: %v", afterErr)
+			} else {
+				diff := executor.ComputeDiff(snapBefore.snap, afterSnap)
+				hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
+				log.Printf("[CacheProfile] snapshot_after INCREMENTAL+diff — %dms, changed=%v, +%d ~%d -%d mv%d",
+					time.Since(snapAfterStart).Milliseconds(), hasChanges,
+					len(diff.Created), len(diff.Modified), len(diff.Deleted), len(diff.Moved))
+
+				if hasChanges {
+					// Writeback: convert vault file diffs to DB items
+					movedEntries := make([]mirror.MovedFileEntry, len(diff.Moved))
+					for i, m := range diff.Moved {
+						movedEntries[i] = mirror.MovedFileEntry{OldPath: m.OldPath, NewPath: m.NewPath}
+					}
+					importer := mirror.NewImporter(h.vaultFS)
+					entries, importErr := importer.ProcessDiff(
+						session.memberID, diff.Created, diff.Modified, diff.Deleted, movedEntries, snapBefore.idMap,
+					)
+					if importErr != nil {
+						log.Printf("[WS] importer.ProcessDiff error: %v", importErr)
+					} else if len(entries) > 0 {
+						wbResult := executor.WriteBack(
+							context.Background(), h.itemWriter,
+							session.memberID, entries,
+						)
+						log.Printf("[WS] WriteBack: +%d ~%d mv%d -%d err%d",
+							wbResult.Created, wbResult.Updated, wbResult.Moved,
+							wbResult.Deleted, wbResult.Errors)
+					}
+
+					h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)
+					session.Send(map[string]interface{}{
+						"type":     "vault_changed",
+						"memberID": session.memberID,
+					})
+				}
+				h.snapCache.Store(session.memberID, &cachedSnapshot{snap: afterSnap, idMap: afterIDMap})
+			}
+		}
+
+		// 10. Generate session title (fire-and-forget)
+		h.maybeGenerateTitle(session, messageText, accumulatedText)
+	}()
 }
 
-// loadBeforeSnapshot reads the snapshot from DB. Falls back to full EFS scan
-// if no DB record exists (first use), and stores the result to DB.
+// loadBeforeSnapshot 先查記憶體 cache，cache miss 再查 DB，DB 也沒有才做完整 EFS scan。
 func (h *WsHandler) loadBeforeSnapshot(memberID string) (map[string]executor.FileSnapshot, map[string]string, error) {
+	start := time.Now()
+	if cached, ok := h.snapCache.Load(memberID); ok {
+		cs := cached.(*cachedSnapshot)
+		log.Printf("[CacheProfile] snapshot_before HIT memcache, files=%d, elapsed=%dms",
+			len(cs.snap), time.Since(start).Milliseconds())
+		return cs.snap, cs.idMap, nil
+	}
+
 	ctx := context.Background()
 	rows, err := h.snapshotStore.GetSnapshot(ctx, memberID)
 	if err == nil && len(rows) > 0 {
 		snap, idMap := dbRowsToSnapshot(rows)
+		h.snapCache.Store(memberID, &cachedSnapshot{snap: snap, idMap: idMap})
+		log.Printf("[CacheProfile] snapshot_before from DB, cached, files=%d, elapsed=%dms",
+			len(snap), time.Since(start).Milliseconds())
 		return snap, idMap, nil
 	}
 
@@ -704,11 +750,15 @@ func (h *WsHandler) loadBeforeSnapshot(memberID string) (map[string]executor.Fil
 	if storeErr := h.snapshotStore.ReplaceSnapshot(ctx, memberID, dbRows); storeErr != nil {
 		log.Printf("[WS] DB snapshot initial store failed for %s: %v", memberID, storeErr)
 	}
+	h.snapCache.Store(memberID, &cachedSnapshot{snap: snap, idMap: idMap})
+	log.Printf("[CacheProfile] snapshot_before fullScan+DB, files=%d, elapsed=%dms",
+		len(snap), time.Since(start).Milliseconds())
 	return snap, idMap, nil
 }
 
 // updateDBSnapshot applies diff changes to the DB snapshot incrementally.
 func (h *WsHandler) updateDBSnapshot(memberID string, afterSnap map[string]executor.FileSnapshot, afterIDMap map[string]string, diff executor.VaultDiff) {
+	start := time.Now()
 	ctx := context.Background()
 
 	var upserts []database.SnapshotRow
@@ -745,6 +795,8 @@ func (h *WsHandler) updateDBSnapshot(memberID string, afterSnap map[string]execu
 	if err := h.snapshotStore.DeleteSnapshotFiles(ctx, memberID, deletes); err != nil {
 		log.Printf("[WS] DB snapshot delete error: %v", err)
 	}
+	log.Printf("[CacheProfile] updateDBSnapshot DONE — upserted=%d, deleted=%d, elapsed=%dms, member=%s",
+		len(upserts), len(deletes), time.Since(start).Milliseconds(), memberID)
 }
 
 // ensureCLI returns an alive StreamCLI, rebuilding with --resume if needed.
@@ -773,7 +825,7 @@ func (h *WsHandler) ensureCLI(session *WsSession) *executor.StreamCLI {
 	log.Printf("[CacheProfile] rebuildSessionJSONL DONE — %dms", time.Since(rebuildStart).Milliseconds())
 
 	cliStart := time.Now()
-	newCLI, err := executor.NewStreamCLI(workDir, "chat", session.memberID, session.sessionID, true, 5*time.Minute)
+	newCLI, err := executor.NewStreamCLI(workDir, "chat", session.memberID, session.sessionID, session.model, true, 5*time.Minute)
 	if err != nil {
 		log.Printf("[CacheProfile] NewStreamCLI FAILED — %dms, error=%v", time.Since(cliStart).Milliseconds(), err)
 		return nil
@@ -927,7 +979,7 @@ func buildInstruction(messageText string, msgObj map[string]interface{}, pageCtx
 		}
 	}
 
-	// 2. attachedItems → 非圖片類展開為文字描述
+	// 2. attachedItems → 非圖片項目直接序列化為完整 JSON（保留所有欄位）
 	if msgObj != nil {
 		if items, ok := msgObj["attachedItems"].([]interface{}); ok {
 			for _, raw := range items {
@@ -939,13 +991,11 @@ func buildInstruction(messageText string, msgObj map[string]interface{}, pageCtx
 				if itemType == "image" {
 					continue // 圖片由 buildContentBlocks 處理
 				}
-				name, _ := item["name"].(string)
-				if name == "" {
-					name, _ = item["title"].(string)
+				// 直接將完整 item 序列化為 JSON，保留所有欄位（content、tags 等）
+				itemJSON, err := json.Marshal(item)
+				if err == nil {
+					parts = append(parts, fmt.Sprintf("\n[附加項目]\n%s", string(itemJSON)))
 				}
-				id, _ := item["id"].(string)
-				iType, _ := item["itemType"].(string)
-				parts = append(parts, fmt.Sprintf("\n[附加項目] 類型: %s, ID: %s, 名稱: %s", iType, id, name))
 			}
 		}
 	}
