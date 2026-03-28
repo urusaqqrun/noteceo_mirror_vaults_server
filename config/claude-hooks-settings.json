@@ -37,6 +37,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "LS|Glob|Grep|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/app/config/hooks/pre-ls-glob-grep-validate.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [

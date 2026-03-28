@@ -1,6 +1,7 @@
 #!/bin/bash
 
 deny_pretooluse() {
+  echo "Hook deny: $1" >&2
   jq -n --arg reason "$1" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -8,7 +9,7 @@ deny_pretooluse() {
       permissionDecisionReason: $reason
     }
   }'
-  exit 0
+  exit 2
 }
 
 canonicalize_path() {

@@ -14,14 +14,12 @@ if [ -z "$COMMAND" ]; then
 fi
 
 if [ -z "$VAULT_ROOT" ] || [ -z "$CWD" ]; then
-  echo "阻擋：缺少 vault 執行上下文" >&2
-  exit 2
+  deny_pretooluse "缺少 vault 執行上下文"
 fi
 
 CWD=$(canonicalize_existing_dir "$CWD")
 if [ -z "$CWD" ]; then
-  echo "阻擋：無法解析工作目錄" >&2
-  exit 2
+  deny_pretooluse "無法解析工作目錄"
 fi
 
 VR="$VAULT_ROOT"
@@ -33,28 +31,23 @@ NORMALIZED_COMMAND="${NORMALIZED_COMMAND//\$\{PWD\}/$CWD}"
 NORMALIZED_COMMAND="${NORMALIZED_COMMAND//\$PWD/$CWD}"
 
 if echo "$NORMALIZED_COMMAND" | grep -qE '(\$\(|`|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)'; then
-  echo "阻擋：禁止在 Bash 中使用未解析的 shell 變數或命令替換，請改用明確絕對路徑" >&2
-  exit 2
+  deny_pretooluse "禁止在 Bash 中使用未解析的 shell 變數或命令替換，請改用明確絕對路徑"
 fi
 
 if echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])(bash|sh)[[:space:]]+-c([[:space:]]|$)|(^|[[:space:];|&])(eval|source)([[:space:]]|$)|(^|[[:space:];|&])\.[[:space:]]'; then
-  echo "阻擋：禁止在 Bash hook 中執行巢狀 shell 或動態載入腳本" >&2
-  exit 2
+  deny_pretooluse "禁止在 Bash hook 中執行巢狀 shell 或動態載入腳本"
 fi
 
 if echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])cd([[:space:]]|$)'; then
-  echo "阻擋：vault Bash 請直接使用絕對路徑，不要使用 cd" >&2
-  exit 2
+  deny_pretooluse "vault Bash 請直接使用絕對路徑，不要使用 cd"
 fi
 
 if echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])ln[[:space:]]+-s([[:space:]]|$)'; then
-  echo "阻擋：禁止建立 symlink" >&2
-  exit 2
+  deny_pretooluse "禁止建立 symlink"
 fi
 
 if echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:]'"'"'";|&()<>])(\./|\.\./|[A-Za-z0-9._-]+/)'; then
-  echo "阻擋：vault Bash 請使用絕對路徑，禁止使用相對路徑或目錄跳轉" >&2
-  exit 2
+  deny_pretooluse "vault Bash 請使用絕對路徑，禁止使用相對路徑或目錄跳轉"
 fi
 
 # 規則 1：阻擋破壞性命令
@@ -69,8 +62,7 @@ DANGEROUS_PATTERNS=(
 
 for pattern in "${DANGEROUS_PATTERNS[@]}"; do
   if echo "$COMMAND" | grep -qF "$pattern"; then
-    echo "阻擋：偵測到危險命令模式 \"$pattern\"" >&2
-    exit 2
+    deny_pretooluse "偵測到危險命令模式 \"$pattern\""
   fi
 done
 
@@ -87,16 +79,14 @@ while IFS= read -r raw_path; do
   CANONICAL_PATH=$(canonicalize_path "$CWD" "$raw_path")
   if path_within_root "$CANONICAL_PATH" "$SHARED_ROOT"; then
     if [ "$IS_WRITE_COMMAND" = "true" ]; then
-      echo "阻擋：${SHARED_ROOT}/ 是唯讀目錄，禁止寫入" >&2
-      exit 2
+      deny_pretooluse "${SHARED_ROOT}/ 是唯讀目錄，禁止寫入"
     fi
     continue
   fi
 
   if ! path_within_root "$CANONICAL_PATH" "$CWD"; then
-    echo "阻擋：禁止存取工作目錄外的 vault 路徑" >&2
-    exit 2
+    deny_pretooluse "禁止存取工作目錄外的 vault 路徑"
   fi
-done < <(echo "$NORMALIZED_COMMAND" | grep -oE '/[^[:space:]'"'"'";|&()<>]+' || true)
+done < <(echo "$NORMALIZED_COMMAND" | tr -d "\"'" | grep -oE '/[^[:space:];|&()<>]+' || true)
 
 exit 0
