@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/urusaqqrun/vault-mirror-service/mirror"
 )
@@ -32,17 +33,19 @@ func TakeSnapshot(vaultFS mirror.VaultFS, userID string) (map[string]FileSnapsho
 func TakeSnapshotAndPathIDMap(vaultFS mirror.VaultFS, userID string) (map[string]FileSnapshot, map[string]string, error) {
 	snap := make(map[string]FileSnapshot)
 	idMap := make(map[string]string)
+	var walkCount, hashCount, jsonParseCount int
+	var totalBytes int64
 	err := vaultFS.Walk(userID, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}
+		walkCount++
 		data, rErr := vaultFS.ReadFile(path)
 		if rErr != nil {
 			return nil
 		}
+		totalBytes += int64(len(data))
 		h := sha256.Sum256(data)
-		// path 已是相對於 VaultFS root 的路徑（含 userID 前綴），
-		// 需去掉 userID/ 前綴讓 diff 結果可直接對應 Vault 內部路徑
 		relPath := path
 		prefix := userID + "/"
 		if len(path) > len(prefix) && path[:len(prefix)] == prefix {
@@ -51,18 +54,19 @@ func TakeSnapshotAndPathIDMap(vaultFS mirror.VaultFS, userID string) (map[string
 		if isSystemFile(relPath) {
 			return nil
 		}
+		hashCount++
 		snap[relPath] = FileSnapshot{
 			Path:    relPath,
 			Hash:    fmt.Sprintf("%x", h),
 			ModTime: info.ModTime(),
 		}
 
-		// 統一從 JSON 讀取 ID
 		if strings.HasSuffix(path, ".json") {
 			var doc map[string]any
 			if jErr := json.Unmarshal(data, &doc); jErr == nil {
 				if id, ok := doc["id"].(string); ok && id != "" {
 					idMap[relPath] = id
+					jsonParseCount++
 				}
 			}
 		}
@@ -71,6 +75,8 @@ func TakeSnapshotAndPathIDMap(vaultFS mirror.VaultFS, userID string) (map[string
 	if err != nil {
 		return nil, nil, err
 	}
+	log.Printf("[CacheProfile] TakeSnapshotFull: walked=%d, hashed=%d, jsonParsed=%d, totalBytes=%d, files=%d",
+		walkCount, hashCount, jsonParseCount, totalBytes, len(snap))
 	return snap, idMap, nil
 }
 
@@ -84,12 +90,15 @@ func TakeIncrementalSnapshot(
 ) (map[string]FileSnapshot, map[string]string, error) {
 	snap := make(map[string]FileSnapshot, len(prev))
 	idMap := make(map[string]string, len(prevIDMap))
-	var reusedCount, rehashedCount int
+	var reusedCount, rehashedCount, walkCount, jsonParseCount int
+	var rehashedBytes int64
 
+	start := time.Now()
 	err := vaultFS.Walk(userID, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}
+		walkCount++
 
 		relPath := path
 		prefix := userID + "/"
@@ -113,6 +122,7 @@ func TakeIncrementalSnapshot(
 		if rErr != nil {
 			return nil
 		}
+		rehashedBytes += int64(len(data))
 		h := sha256.Sum256(data)
 		snap[relPath] = FileSnapshot{
 			Path:    relPath,
@@ -126,6 +136,7 @@ func TakeIncrementalSnapshot(
 			if jErr := json.Unmarshal(data, &doc); jErr == nil {
 				if id, ok := doc["id"].(string); ok && id != "" {
 					idMap[relPath] = id
+					jsonParseCount++
 				}
 			}
 		}
@@ -134,7 +145,7 @@ func TakeIncrementalSnapshot(
 	if err != nil {
 		return nil, nil, err
 	}
-	log.Printf("[CacheProfile] IncrementalSnapshot: reused=%d, rehashed=%d, total=%d",
-		reusedCount, rehashedCount, len(snap))
+	log.Printf("[CacheProfile] IncrementalSnapshot: walked=%d, reused=%d, rehashed=%d, rehashedBytes=%d, jsonParsed=%d, total=%d, elapsed=%dms",
+		walkCount, reusedCount, rehashedCount, rehashedBytes, jsonParseCount, len(snap), time.Since(start).Milliseconds())
 	return snap, idMap, nil
 }

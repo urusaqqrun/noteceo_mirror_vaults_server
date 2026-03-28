@@ -699,9 +699,11 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 
 // loadBeforeSnapshot 先查記憶體 cache，cache miss 再查 DB，DB 也沒有才做完整 EFS scan。
 func (h *WsHandler) loadBeforeSnapshot(memberID string) (map[string]executor.FileSnapshot, map[string]string, error) {
+	start := time.Now()
 	if cached, ok := h.snapCache.Load(memberID); ok {
 		cs := cached.(*cachedSnapshot)
-		log.Printf("[CacheProfile] snapshot_before HIT memcache, files=%d", len(cs.snap))
+		log.Printf("[CacheProfile] snapshot_before HIT memcache, files=%d, elapsed=%dms",
+			len(cs.snap), time.Since(start).Milliseconds())
 		return cs.snap, cs.idMap, nil
 	}
 
@@ -710,7 +712,8 @@ func (h *WsHandler) loadBeforeSnapshot(memberID string) (map[string]executor.Fil
 	if err == nil && len(rows) > 0 {
 		snap, idMap := dbRowsToSnapshot(rows)
 		h.snapCache.Store(memberID, &cachedSnapshot{snap: snap, idMap: idMap})
-		log.Printf("[CacheProfile] snapshot_before from DB, cached, files=%d", len(snap))
+		log.Printf("[CacheProfile] snapshot_before from DB, cached, files=%d, elapsed=%dms",
+			len(snap), time.Since(start).Milliseconds())
 		return snap, idMap, nil
 	}
 
@@ -725,11 +728,14 @@ func (h *WsHandler) loadBeforeSnapshot(memberID string) (map[string]executor.Fil
 		log.Printf("[WS] DB snapshot initial store failed for %s: %v", memberID, storeErr)
 	}
 	h.snapCache.Store(memberID, &cachedSnapshot{snap: snap, idMap: idMap})
+	log.Printf("[CacheProfile] snapshot_before fullScan+DB, files=%d, elapsed=%dms",
+		len(snap), time.Since(start).Milliseconds())
 	return snap, idMap, nil
 }
 
 // updateDBSnapshot applies diff changes to the DB snapshot incrementally.
 func (h *WsHandler) updateDBSnapshot(memberID string, afterSnap map[string]executor.FileSnapshot, afterIDMap map[string]string, diff executor.VaultDiff) {
+	start := time.Now()
 	ctx := context.Background()
 
 	var upserts []database.SnapshotRow
@@ -766,6 +772,8 @@ func (h *WsHandler) updateDBSnapshot(memberID string, afterSnap map[string]execu
 	if err := h.snapshotStore.DeleteSnapshotFiles(ctx, memberID, deletes); err != nil {
 		log.Printf("[WS] DB snapshot delete error: %v", err)
 	}
+	log.Printf("[CacheProfile] updateDBSnapshot DONE — upserted=%d, deleted=%d, elapsed=%dms, member=%s",
+		len(upserts), len(deletes), time.Since(start).Milliseconds(), memberID)
 }
 
 // ensureCLI returns an alive StreamCLI, rebuilding with --resume if needed.
