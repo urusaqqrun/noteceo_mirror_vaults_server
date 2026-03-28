@@ -143,6 +143,8 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	mode := q.Get("mode")
 	model := q.Get("model")
 	token := q.Get("token")
+	timezone := q.Get("timezone")
+	lang := q.Get("lang")
 
 	if memberID == "" {
 		http.Error(w, "memberID required", 400)
@@ -193,6 +195,11 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 
 	isNew := q.Get("isNew") == "true"
+
+	// Inject timezone & lang into user CLAUDE.md
+	if timezone != "" || lang != "" {
+		h.updateUserLocale(memberID, timezone, lang)
+	}
 
 	go func() {
 		wsCliStart := time.Now()
@@ -800,6 +807,59 @@ func (h *WsHandler) updateDBSnapshot(memberID string, afterSnap map[string]execu
 	}
 	log.Printf("[CacheProfile] updateDBSnapshot DONE — upserted=%d, deleted=%d, elapsed=%dms, member=%s",
 		len(upserts), len(deletes), time.Since(start).Milliseconds(), memberID)
+}
+
+// updateUserLocale writes timezone & lang into the user's vault CLAUDE.md using markers.
+// Only updates if values changed to avoid unnecessary writes on reconnect.
+func (h *WsHandler) updateUserLocale(memberID, timezone, lang string) {
+	claudeMDPath := filepath.Join(memberID, "CLAUDE.md")
+
+	// Build new locale block
+	var lines []string
+	if timezone != "" {
+		lines = append(lines, fmt.Sprintf("用戶時區：%s", timezone))
+	}
+	if lang != "" {
+		lines = append(lines, fmt.Sprintf("回應語言：%s", lang))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	newBlock := "<!-- LOCALE:START -->\n## 用戶地區設定\n" + strings.Join(lines, "\n") + "\n<!-- LOCALE:END -->"
+
+	existing, err := h.vaultFS.ReadFile(claudeMDPath)
+	if err != nil {
+		// No user CLAUDE.md yet — create with locale block
+		content := fmt.Sprintf("# 用戶個人化設定\n\n%s\n\n<!-- AIHINTS:START -->\n<!-- AIHINTS:END -->\n\n<!-- AI_MEMORY:START -->\n<!-- AI_MEMORY:END -->\n", newBlock)
+		h.vaultFS.WriteFile(claudeMDPath, []byte(content))
+		return
+	}
+
+	content := string(existing)
+	startMarker := "<!-- LOCALE:START -->"
+	endMarker := "<!-- LOCALE:END -->"
+	startIdx := strings.Index(content, startMarker)
+	endIdx := strings.Index(content, endMarker)
+
+	if startIdx >= 0 && endIdx >= 0 && endIdx > startIdx {
+		// Check if unchanged
+		oldBlock := content[startIdx : endIdx+len(endMarker)]
+		if oldBlock == newBlock {
+			return // no change
+		}
+		// Replace
+		content = content[:startIdx] + newBlock + content[endIdx+len(endMarker):]
+	} else {
+		// Insert after title line or at beginning
+		titleEnd := strings.Index(content, "\n\n")
+		if titleEnd >= 0 {
+			content = content[:titleEnd+2] + newBlock + "\n\n" + content[titleEnd+2:]
+		} else {
+			content = newBlock + "\n\n" + content
+		}
+	}
+
+	h.vaultFS.WriteFile(claudeMDPath, []byte(content))
 }
 
 // enforceMaxCLIs kills oldest CLIs for a user if they exceed maxCount.
