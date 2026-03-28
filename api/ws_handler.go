@@ -198,6 +198,9 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		wsCliStart := time.Now()
 		workDir := filepath.Join(h.vaultRoot, memberID)
 
+		// 限制同一 user 最多 3 個活躍 CLI，超過時 kill 最舊的
+		h.enforceMaxCLIs(memberID, 3)
+
 		if isNew {
 			if val, loaded := h.cliPool.LoadAndDelete(memberID); loaded {
 				wc := val.(*warmCLI)
@@ -797,6 +800,41 @@ func (h *WsHandler) updateDBSnapshot(memberID string, afterSnap map[string]execu
 	}
 	log.Printf("[CacheProfile] updateDBSnapshot DONE — upserted=%d, deleted=%d, elapsed=%dms, member=%s",
 		len(upserts), len(deletes), time.Since(start).Milliseconds(), memberID)
+}
+
+// enforceMaxCLIs kills oldest CLIs for a user if they exceed maxCount.
+func (h *WsHandler) enforceMaxCLIs(memberID string, maxCount int) {
+	type sessionEntry struct {
+		key     string
+		session *WsSession
+	}
+	var userSessions []sessionEntry
+
+	h.sessions.Range(func(key, val any) bool {
+		s := val.(*WsSession)
+		if s.memberID == memberID {
+			s.mu.Lock()
+			alive := s.cli != nil && s.cli.IsAlive()
+			s.mu.Unlock()
+			if alive {
+				userSessions = append(userSessions, sessionEntry{key: key.(string), session: s})
+			}
+		}
+		return true
+	})
+
+	// Kill oldest sessions until within limit (leave room for the new one)
+	for len(userSessions) >= maxCount {
+		oldest := userSessions[0]
+		userSessions = userSessions[1:]
+		oldest.session.mu.Lock()
+		if oldest.session.cli != nil {
+			log.Printf("[WS] enforceMaxCLIs: killing CLI pid=%d for member=%s (over limit %d)",
+				oldest.session.cli.Pid(), memberID, maxCount)
+			oldest.session.cli.Kill()
+		}
+		oldest.session.mu.Unlock()
+	}
 }
 
 // ensureCLI returns an alive StreamCLI, rebuilding with --resume if needed.
