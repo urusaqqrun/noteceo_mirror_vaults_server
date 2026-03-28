@@ -359,22 +359,29 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		})
 	}
 
-	// 4. snapshot_before: read from DB
-	snapBeforeStart := time.Now()
-	beforeSnap, beforeIDMap, snapErr := h.loadBeforeSnapshot(session.memberID)
-	if snapErr != nil {
-		log.Printf("[WS] snapshot before error: %v", snapErr)
-	} else {
-		log.Printf("[CacheProfile] snapshot_before — %dms, files=%d",
-			time.Since(snapBeforeStart).Milliseconds(), len(beforeSnap))
+	// 4. snapshot_before: 背景載入（結果只在 streaming 結束後才需要）
+	type snapBeforeResult struct {
+		snap  map[string]executor.FileSnapshot
+		idMap map[string]string
+		err   error
 	}
+	snapCh := make(chan snapBeforeResult, 1)
+	go func() {
+		snapBeforeStart := time.Now()
+		snap, idMap, err := h.loadBeforeSnapshot(session.memberID)
+		if err != nil {
+			log.Printf("[WS] snapshot before error: %v", err)
+		} else {
+			log.Printf("[CacheProfile] snapshot_before — %dms, files=%d",
+				time.Since(snapBeforeStart).Milliseconds(), len(snap))
+		}
+		snapCh <- snapBeforeResult{snap, idMap, err}
+	}()
 
-	// 5. Send message to StreamCLI
-	// 組裝完整指令：messageText + pageContext + attachedItems metadata
+	// 5. Send message to StreamCLI（不再被 snapshot 阻塞）
 	pageCtx, _ := msg["pageContext"].(map[string]interface{})
 	instruction := buildInstruction(messageText, msgObj, pageCtx)
 
-	// 檢查是否有圖片附件，有的話組成多模態 content blocks
 	var cliContent interface{} = instruction
 	if msgObj != nil {
 		if blocks := buildContentBlocks(instruction, msgObj); blocks != nil {
@@ -628,16 +635,17 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		"token_usage":    tokenUsage,
 	})
 
-	// 9. snapshot_after: incremental EFS scan + diff + DB update
-	if snapErr == nil {
+	// 9. snapshot_after: 等待背景 snapshot_before 結果，再做增量掃描 + diff
+	snapBefore := <-snapCh
+	if snapBefore.err == nil {
 		snapAfterStart := time.Now()
 		afterSnap, afterIDMap, afterErr := executor.TakeIncrementalSnapshot(
-			h.vaultFS, session.memberID, beforeSnap, beforeIDMap,
+			h.vaultFS, session.memberID, snapBefore.snap, snapBefore.idMap,
 		)
 		if afterErr != nil {
 			log.Printf("[WS] incremental snapshot after error: %v", afterErr)
 		} else {
-			diff := executor.ComputeDiff(beforeSnap, afterSnap)
+			diff := executor.ComputeDiff(snapBefore.snap, afterSnap)
 			hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
 			log.Printf("[CacheProfile] snapshot_after INCREMENTAL+diff — %dms, changed=%v, +%d ~%d -%d mv%d",
 				time.Since(snapAfterStart).Milliseconds(), hasChanges,
