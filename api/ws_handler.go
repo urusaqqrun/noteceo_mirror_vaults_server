@@ -649,27 +649,33 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	go func() {
 		snapBefore := <-snapCh
 		if snapBefore.err == nil {
-			snapAfterStart := time.Now()
-			afterSnap, afterIDMap, afterErr := executor.TakeIncrementalSnapshot(
-				h.vaultFS, session.memberID, snapBefore.snap, snapBefore.idMap,
-			)
-			if afterErr != nil {
-				log.Printf("[WS] incremental snapshot after error: %v", afterErr)
+			if len(sentToolUseIDs) == 0 {
+				// 沒有任何 tool_use → 檔案不可能被修改，跳過 EFS Walk
+				log.Printf("[CacheProfile] snapshot_after SKIPPED — no tool_use, member=%s", session.memberID)
+				h.snapCache.Store(session.memberID, &cachedSnapshot{snap: snapBefore.snap, idMap: snapBefore.idMap})
 			} else {
-				diff := executor.ComputeDiff(snapBefore.snap, afterSnap)
-				hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
-				log.Printf("[CacheProfile] snapshot_after INCREMENTAL+diff — %dms, changed=%v, +%d ~%d -%d mv%d",
-					time.Since(snapAfterStart).Milliseconds(), hasChanges,
-					len(diff.Created), len(diff.Modified), len(diff.Deleted), len(diff.Moved))
+				snapAfterStart := time.Now()
+				afterSnap, afterIDMap, afterErr := executor.TakeIncrementalSnapshot(
+					h.vaultFS, session.memberID, snapBefore.snap, snapBefore.idMap,
+				)
+				if afterErr != nil {
+					log.Printf("[WS] incremental snapshot after error: %v", afterErr)
+				} else {
+					diff := executor.ComputeDiff(snapBefore.snap, afterSnap)
+					hasChanges := len(diff.Created)+len(diff.Modified)+len(diff.Deleted)+len(diff.Moved) > 0
+					log.Printf("[CacheProfile] snapshot_after INCREMENTAL+diff — %dms, changed=%v, +%d ~%d -%d mv%d, tools=%d",
+						time.Since(snapAfterStart).Milliseconds(), hasChanges,
+						len(diff.Created), len(diff.Modified), len(diff.Deleted), len(diff.Moved), len(sentToolUseIDs))
 
-				if hasChanges {
-					h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)
-					session.Send(map[string]interface{}{
-						"type":     "vault_changed",
-						"memberID": session.memberID,
-					})
+					if hasChanges {
+						h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)
+						session.Send(map[string]interface{}{
+							"type":     "vault_changed",
+							"memberID": session.memberID,
+						})
+					}
+					h.snapCache.Store(session.memberID, &cachedSnapshot{snap: afterSnap, idMap: afterIDMap})
 				}
-				h.snapCache.Store(session.memberID, &cachedSnapshot{snap: afterSnap, idMap: afterIDMap})
 			}
 		}
 
