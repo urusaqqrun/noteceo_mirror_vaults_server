@@ -55,12 +55,12 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 		return fmt.Errorf("get home dir: %w", err)
 	}
 
-	sessionsDir := filepath.Join(homeDir, ".claude", "projects", encodedWorkDir, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
-		return fmt.Errorf("mkdir sessions: %w", err)
+	projectDir := filepath.Join(homeDir, ".claude", "projects", encodedWorkDir)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		return fmt.Errorf("mkdir project dir: %w", err)
 	}
 
-	filePath := filepath.Join(sessionsDir, sessionID+".jsonl")
+	filePath := filepath.Join(projectDir, sessionID+".jsonl")
 	cwd := filepath.Join("/vaults", memberID)
 
 	var lines []string

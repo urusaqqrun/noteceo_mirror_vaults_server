@@ -597,6 +597,21 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				}
 			}
 
+		case eventType == "result" && subtype == "error_during_execution":
+			errMsgs, _ := parsed["errors"].([]interface{})
+			errStr := "CLI error"
+			if len(errMsgs) > 0 {
+				if s, ok := errMsgs[0].(string); ok {
+					errStr = s
+				}
+			}
+			log.Printf("[WS-CLI] error_during_execution: %s", errStr)
+			session.Send(map[string]interface{}{
+				"type":     "stream_error",
+				"memberID": session.memberID,
+				"error":    errStr,
+			})
+
 		case eventType == "result" && subtype == "success":
 			if resultText, ok := parsed["result"].(string); ok && resultText != "" && accumulatedText == "" {
 				accumulatedText = resultText
