@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"log"
 	"time"
 )
 
@@ -33,6 +34,7 @@ func (s *PgStore) EnsureVaultSnapshotsTable(ctx context.Context) error {
 }
 
 func (s *PgStore) GetSnapshot(ctx context.Context, memberID string) ([]SnapshotRow, error) {
+	start := time.Now()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT file_path, hash, mtime, COALESCE(doc_id, '') FROM vault_snapshots WHERE member_id = $1`,
 		memberID)
@@ -49,6 +51,8 @@ func (s *PgStore) GetSnapshot(ctx context.Context, memberID string) ([]SnapshotR
 		}
 		out = append(out, r)
 	}
+	log.Printf("[CacheProfile] DB GetSnapshot: rows=%d, elapsed=%dms, member=%s",
+		len(out), time.Since(start).Milliseconds(), memberID)
 	return out, rows.Err()
 }
 
@@ -56,6 +60,7 @@ func (s *PgStore) UpsertSnapshotFiles(ctx context.Context, memberID string, file
 	if len(files) == 0 {
 		return nil
 	}
+	start := time.Now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -81,13 +86,17 @@ func (s *PgStore) UpsertSnapshotFiles(ctx context.Context, memberID string, file
 			return err
 		}
 	}
-	return tx.Commit()
+	err = tx.Commit()
+	log.Printf("[CacheProfile] DB UpsertSnapshotFiles: rows=%d, elapsed=%dms, member=%s",
+		len(files), time.Since(start).Milliseconds(), memberID)
+	return err
 }
 
 func (s *PgStore) DeleteSnapshotFiles(ctx context.Context, memberID string, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
+	start := time.Now()
 	for _, p := range paths {
 		if _, err := s.db.ExecContext(ctx,
 			`DELETE FROM vault_snapshots WHERE member_id = $1 AND file_path = $2`,
@@ -95,10 +104,13 @@ func (s *PgStore) DeleteSnapshotFiles(ctx context.Context, memberID string, path
 			return err
 		}
 	}
+	log.Printf("[CacheProfile] DB DeleteSnapshotFiles: rows=%d, elapsed=%dms, member=%s",
+		len(paths), time.Since(start).Milliseconds(), memberID)
 	return nil
 }
 
 func (s *PgStore) ReplaceSnapshot(ctx context.Context, memberID string, files []SnapshotRow) error {
+	start := time.Now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -124,7 +136,10 @@ func (s *PgStore) ReplaceSnapshot(ctx context.Context, memberID string, files []
 			return err
 		}
 	}
-	return tx.Commit()
+	err = tx.Commit()
+	log.Printf("[CacheProfile] DB ReplaceSnapshot: rows=%d, elapsed=%dms, member=%s",
+		len(files), time.Since(start).Milliseconds(), memberID)
+	return err
 }
 
 func (s *PgStore) SnapshotExists(ctx context.Context, memberID string) (bool, error) {
