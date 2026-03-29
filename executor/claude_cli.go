@@ -213,6 +213,23 @@ func ensurePasswdEntry(uid, gid uint32) {
 	f.WriteString(entry)
 }
 
+// fixClaudeHomePerms 確保 /home/mirror 及 .claude/ 下所有檔案可被任意 UID 存取。
+// CLI 動態建立的 sessions/、policy-limits.json 預設 mode 700/600，需修正。
+func fixClaudeHomePerms() {
+	os.Chmod("/home/mirror", 0755)
+	filepath.WalkDir("/home/mirror/.claude", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			os.Chmod(path, 0777)
+		} else {
+			os.Chmod(path, 0666)
+		}
+		return nil
+	})
+}
+
 // newClaudeCmd 建立 claude CLI 指令，以 member 專屬 UID 運行
 func newClaudeCmd(ctx context.Context, workDir, scope, userID string, claudeArgs []string) *exec.Cmd {
 	var cmd *exec.Cmd
@@ -232,6 +249,8 @@ func newClaudeCmd(ctx context.Context, workDir, scope, userID string, claudeArgs
 			uid, gid := MemberCredentials(userID)
 			ensurePasswdEntry(uid, gid)
 			EnsureVaultPermissions(workDir, uid, gid)
+			// 修正 CLI 動態建立的 sessions/、policy-limits.json 等權限
+			fixClaudeHomePerms()
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				Credential: &syscall.Credential{Uid: uid, Gid: gid},
 			}
