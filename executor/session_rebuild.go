@@ -48,7 +48,6 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 		return nil
 	}
 
-	// Compute the encoded project path used by Claude CLI
 	encodedWorkDir := encodeProjectPath(workDir)
 
 	homeDir, err := os.UserHomeDir()
@@ -56,12 +55,12 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 		return fmt.Errorf("get home dir: %w", err)
 	}
 
-	projectDir := filepath.Join(homeDir, ".claude", "projects", encodedWorkDir)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		return fmt.Errorf("mkdir project dir: %w", err)
+	sessionsDir := filepath.Join(homeDir, ".claude", "projects", encodedWorkDir, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return fmt.Errorf("mkdir sessions dir: %w", err)
 	}
 
-	filePath := filepath.Join(projectDir, sessionID+".jsonl")
+	filePath := filepath.Join(sessionsDir, sessionID+".jsonl")
 	cwd := workDir
 
 	var lines []string
@@ -195,8 +194,9 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 	return os.WriteFile(filePath, []byte(content), 0644)
 }
 
-// CleanupSessionJSONL removes the JSONL file for a session so that
+// CleanupSessionJSONL removes Claude CLI's session files so that
 // --session-id won't conflict with an existing session on disk.
+// Claude CLI stores sessions in the sessions/ subdirectory.
 func CleanupSessionJSONL(sessionID, workDir string) {
 	if sessionID == "" {
 		return
@@ -206,9 +206,17 @@ func CleanupSessionJSONL(sessionID, workDir string) {
 		return
 	}
 	encoded := encodeProjectPath(workDir)
-	jsonlPath := filepath.Join(homeDir, ".claude", "projects", encoded, sessionID+".jsonl")
-	if err := os.Remove(jsonlPath); err == nil {
-		log.Printf("[SessionCleanup] removed stale JSONL: %s", jsonlPath)
+	projectDir := filepath.Join(homeDir, ".claude", "projects", encoded)
+
+	candidates := []string{
+		filepath.Join(projectDir, "sessions", sessionID+".jsonl"),
+		filepath.Join(projectDir, "sessions", sessionID+".lock"),
+		filepath.Join(projectDir, sessionID+".jsonl"),
+	}
+	for _, path := range candidates {
+		if err := os.Remove(path); err == nil {
+			log.Printf("[SessionCleanup] removed: %s", path)
+		}
 	}
 }
 

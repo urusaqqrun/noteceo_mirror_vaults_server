@@ -490,10 +490,11 @@ type StreamCLI struct {
 	timerMu   sync.Mutex // 專門保護 idleTimer，避免 stdout goroutine 與 Kill/SendMessage 競爭
 	workDir    string
 	sessionID  string
-	alive      bool
 	idleTimer  *time.Timer
 	idleTTL    time.Duration
-	CacheBuilt bool // true after first message builds Anthropic prompt cache
+	doneCh     chan struct{} // closed when process exits; all readers unblock immediately
+	waitErr    error         // set before doneCh is closed
+	CacheBuilt bool         // true after first message builds Anthropic prompt cache
 }
 
 // NewStreamCLI 啟動帶有 streaming 功能的長駐 CLI。
@@ -576,8 +577,14 @@ func NewStreamCLI(workDir, scope, userID, sessionID, model string, resume bool, 
 		idleTTL:   idleTTL,
 		workDir:   workDir,
 		sessionID: sessionID,
-		alive:     true,
+		doneCh:    make(chan struct{}),
 	}
+
+	go func() {
+		s.waitErr = cmd.Wait()
+		close(s.doneCh)
+	}()
+
 	s.resetIdleTimer()
 
 	log.Printf("[CacheProfile] NewStreamCLI total — %dms, pid=%d, workDir=%s, sessionID=%s, resume=%v, uidIsolation=%v",
@@ -591,7 +598,7 @@ func (s *StreamCLI) SendMessage(content interface{}) (<-chan StreamEvent, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.alive {
+	if !s.IsAliveUnlocked() {
 		return nil, fmt.Errorf("CLI process not alive")
 	}
 
@@ -619,7 +626,6 @@ func (s *StreamCLI) SendMessage(content interface{}) (<-chan StreamEvent, error)
 	}
 	data = append(data, '\n')
 	if _, err := s.stdin.Write(data); err != nil {
-		s.alive = false
 		return nil, fmt.Errorf("write stdin: %w", err)
 	}
 
@@ -655,10 +661,6 @@ func (s *StreamCLI) SendMessage(content interface{}) (<-chan StreamEvent, error)
 				}
 			}
 		}
-		// stdout 關閉 → process 已死
-		s.mu.Lock()
-		s.alive = false
-		s.mu.Unlock()
 	}()
 
 	return ch, nil
@@ -667,9 +669,7 @@ func (s *StreamCLI) SendMessage(content interface{}) (<-chan StreamEvent, error)
 // Interrupt sends SIGINT to the CLI process to abort the current response.
 // Unlike Kill(), the process stays alive and can accept new messages.
 func (s *StreamCLI) Interrupt() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.alive || s.cmd.Process == nil {
+	if !s.IsAlive() || s.cmd.Process == nil {
 		return false
 	}
 	log.Printf("[StreamCLI] interrupting pid=%d (SIGINT)", s.cmd.Process.Pid)
@@ -688,20 +688,30 @@ func (s *StreamCLI) Kill() {
 	}
 	s.timerMu.Unlock()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.alive && s.cmd.Process != nil {
+	if s.cmd.Process != nil {
 		log.Printf("[StreamCLI] killing pid=%d", s.cmd.Process.Pid)
 		_ = s.cmd.Process.Kill()
-		_ = s.cmd.Wait()
-		s.alive = false
+		<-s.doneCh
 	}
 }
 
 func (s *StreamCLI) IsAlive() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.alive
+	select {
+	case <-s.doneCh:
+		return false
+	default:
+		return true
+	}
+}
+
+// IsAliveUnlocked is the same check, callable when mu is already held.
+func (s *StreamCLI) IsAliveUnlocked() bool {
+	select {
+	case <-s.doneCh:
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *StreamCLI) Pid() int {
