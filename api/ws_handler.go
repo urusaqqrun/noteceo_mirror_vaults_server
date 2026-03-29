@@ -24,6 +24,12 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+const (
+	wsPingInterval = 30 * time.Second
+	wsPongWait     = 90 * time.Second
+	wsWriteWait    = 10 * time.Second
+)
+
 // WsSession represents a single WebSocket connection session.
 type WsSession struct {
 	conn      *websocket.Conn
@@ -35,6 +41,7 @@ type WsSession struct {
 	status    string // idle, asking, interrupted
 	mu        sync.Mutex
 	cli       *executor.StreamCLI
+	done      chan struct{} // 關閉時通知心跳 goroutine 停止
 }
 
 // Send writes a JSON message to the WebSocket connection (thread-safe).
@@ -174,11 +181,20 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		mode:      mode,
 		model:     model,
 		status:    "idle",
+		done:      make(chan struct{}),
 	}
 	sessionKey := memberID + ":" + sessionID
 	h.sessions.Store(sessionKey, session)
 
+	// 設定 pong handler：收到 pong 就延長 read deadline
+	conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return nil
+	})
+
 	defer func() {
+		close(session.done)
 		session.mu.Lock()
 		if session.cli != nil {
 			session.cli.Kill()
@@ -187,6 +203,25 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		session.mu.Unlock()
 		h.sessions.Delete(sessionKey)
 		conn.Close()
+	}()
+
+	// 心跳 goroutine：定期發 WebSocket ping frame 保持連線
+	go func() {
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				session.mu.Lock()
+				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait))
+				session.mu.Unlock()
+				if err != nil {
+					return
+				}
+			case <-session.done:
+				return
+			}
+		}
 	}()
 
 	session.Send(map[string]interface{}{
