@@ -71,6 +71,7 @@ func migrateExistingVaults() {
 		}
 		memberID := e.Name()
 		uid, gid := MemberCredentials(memberID)
+		ensurePasswdEntry(uid, gid)
 		workDir := filepath.Join(vaultRoot, memberID)
 		EnsureVaultPermissions(workDir, uid, gid)
 		migrated++
@@ -183,6 +184,35 @@ func ChownToMember(fullPath, memberID string) {
 	os.Chown(fullPath, int(uid), int(gid))
 }
 
+// passwdMu 保護 /etc/passwd 寫入
+var passwdMu sync.Mutex
+
+// ensurePasswdEntry 為 member UID 建立 /etc/passwd 條目，
+// 避免 Node.js os.userInfo() 因找不到 UID 而拋出 ENOENT。
+func ensurePasswdEntry(uid, gid uint32) {
+	if _, err := user.LookupId(fmt.Sprintf("%d", uid)); err == nil {
+		return
+	}
+
+	passwdMu.Lock()
+	defer passwdMu.Unlock()
+
+	// double-check after lock
+	if _, err := user.LookupId(fmt.Sprintf("%d", uid)); err == nil {
+		return
+	}
+
+	f, err := os.OpenFile("/etc/passwd", os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("[Sandbox] cannot append /etc/passwd: %v", err)
+		return
+	}
+	defer f.Close()
+
+	entry := fmt.Sprintf("m%d:x:%d:%d::/home/mirror:/bin/bash\n", uid, uid, gid)
+	f.WriteString(entry)
+}
+
 // newClaudeCmd 建立 claude CLI 指令，以 member 專屬 UID 運行
 func newClaudeCmd(ctx context.Context, workDir, scope, userID string, claudeArgs []string) *exec.Cmd {
 	var cmd *exec.Cmd
@@ -200,6 +230,7 @@ func newClaudeCmd(ctx context.Context, workDir, scope, userID string, claudeArgs
 	if os.Getuid() == 0 {
 		if uidIsolationAvailable {
 			uid, gid := MemberCredentials(userID)
+			ensurePasswdEntry(uid, gid)
 			EnsureVaultPermissions(workDir, uid, gid)
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				Credential: &syscall.Credential{Uid: uid, Gid: gid},
