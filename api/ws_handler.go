@@ -102,20 +102,13 @@ func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 // HandleWarmup pre-warms a CLI process into the pool.
+// 認證由 Nginx auth_request 處理，memberID 從 X-User-ID header 取得。
 func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		http.Error(w, "token required", 401)
+	memberID := r.Header.Get("X-User-ID")
+	if memberID == "" {
+		http.Error(w, "unauthorized", 401)
 		return
 	}
-	token = strings.TrimPrefix(token, "Bearer ")
-	claims, err := verifyJWT(token)
-	if err != nil {
-		log.Printf("[Warmup] JWT verification failed: %v", err)
-		http.Error(w, "invalid token", 401)
-		return
-	}
-	memberID := claims.UserID
 	model := r.URL.Query().Get("model")
 
 	if val, ok := h.cliPool.Load(memberID); ok {

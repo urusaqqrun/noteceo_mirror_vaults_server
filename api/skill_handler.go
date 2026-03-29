@@ -27,16 +27,9 @@ func (h *SkillHandler) RegisterRoutes(mux *http.ServeMux) {
 // Body: { "skills": { "name": "instruction content", "other": "" } }
 // Empty string value → delete the skill file; non-empty → write/overwrite.
 func (h *SkillHandler) HandleSkills(w http.ResponseWriter, r *http.Request) {
-	// Extract memberID: X-User-ID (nginx 注入) → JWT payload → query param
 	memberID := r.Header.Get("X-User-ID")
 	if memberID == "" {
-		memberID = extractMemberIDFromAuth(r.Header.Get("Authorization"))
-	}
-	if memberID == "" {
-		memberID = r.URL.Query().Get("memberID")
-	}
-	if memberID == "" {
-		http.Error(w, `{"error":"missing memberID"}`, 401)
+		http.Error(w, `{"error":"unauthorized"}`, 401)
 		return
 	}
 

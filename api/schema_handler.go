@@ -27,16 +27,9 @@ func (h *SchemaHandler) RegisterRoutes(mux *http.ServeMux) {
 // SyncSchemas receives item type schemas from the frontend @itemType decorator
 // and writes them to .schemas/ in the user's vault directory.
 func (h *SchemaHandler) SyncSchemas(w http.ResponseWriter, r *http.Request) {
-	// Extract memberID: X-User-ID (nginx 注入) → JWT payload → query param
 	memberID := r.Header.Get("X-User-ID")
 	if memberID == "" {
-		memberID = extractMemberIDFromAuth(r.Header.Get("Authorization"))
-	}
-	if memberID == "" {
-		memberID = r.URL.Query().Get("memberID")
-	}
-	if memberID == "" {
-		http.Error(w, `{"error":"missing memberID"}`, 401)
+		http.Error(w, `{"error":"unauthorized"}`, 401)
 		return
 	}
 
@@ -186,16 +179,3 @@ func updateUserClaudeMD(vaultFS mirror.VaultFS, memberID string) {
 	}
 }
 
-// extractMemberIDFromAuth 從 Authorization header 驗證 JWT 並取 user_id
-func extractMemberIDFromAuth(authHeader string) string {
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	if token == authHeader || token == "" {
-		return ""
-	}
-	claims, err := verifyJWT(token)
-	if err != nil {
-		log.Printf("[Auth] JWT verification failed: %v", err)
-		return ""
-	}
-	return claims.UserID
-}

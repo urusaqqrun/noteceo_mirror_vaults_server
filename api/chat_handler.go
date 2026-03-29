@@ -48,9 +48,22 @@ func (h *ChatHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/internal/user/{member_id}/data", h.DeleteUserData)
 }
 
+// memberIDFromHeader 從 Nginx 注入的 X-User-ID header 取得已驗證的 memberID。
+func memberIDFromHeader(w http.ResponseWriter, r *http.Request) (string, bool) {
+	uid := r.Header.Get("X-User-ID")
+	if uid == "" {
+		chatWriteError(w, http.StatusUnauthorized, "unauthorized")
+		return "", false
+	}
+	return uid, true
+}
+
 // GetMessagesAfterCheckpoint returns messages after a checkpoint (cursor).
 // When checkpointID is empty, the latest N messages are returned.
 func (h *ChatHandler) GetMessagesAfterCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if _, ok := memberIDFromHeader(w, r); !ok {
+		return
+	}
 	var req struct {
 		SessionID    string `json:"sessionID"`
 		Mode         string `json:"mode"`
@@ -82,6 +95,9 @@ func (h *ChatHandler) GetMessagesAfterCheckpoint(w http.ResponseWriter, r *http.
 
 // GetMessagesBeforeCheckpoint returns messages before a checkpoint (cursor).
 func (h *ChatHandler) GetMessagesBeforeCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if _, ok := memberIDFromHeader(w, r); !ok {
+		return
+	}
 	var req struct {
 		SessionID    string `json:"sessionID"`
 		Mode         string `json:"mode"`
@@ -111,16 +127,19 @@ func (h *ChatHandler) GetMessagesBeforeCheckpoint(w http.ResponseWriter, r *http
 
 // GetSessions returns the list of sessions for a member.
 func (h *ChatHandler) GetSessions(w http.ResponseWriter, r *http.Request) {
+	memberID, ok := memberIDFromHeader(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
-		MemberID string `json:"memberID"`
-		Mode     string `json:"mode"`
+		Mode string `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		chatWriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	sessions, err := h.store.GetSessionsByMemberID(r.Context(), req.MemberID, req.Mode)
+	sessions, err := h.store.GetSessionsByMemberID(r.Context(), memberID, req.Mode)
 	if err != nil {
 		log.Printf("[ChatHandler] GetSessions error: %v", err)
 		chatWriteError(w, http.StatusInternalServerError, err.Error())
@@ -131,8 +150,11 @@ func (h *ChatHandler) GetSessions(w http.ResponseWriter, r *http.Request) {
 
 // AddSession creates or updates a session mapping.
 func (h *ChatHandler) AddSession(w http.ResponseWriter, r *http.Request) {
+	memberID, ok := memberIDFromHeader(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
-		MemberID     string `json:"memberID"`
 		SessionID    string `json:"sessionID"`
 		SessionTitle string `json:"sessionTitle"`
 		Mode         string `json:"mode"`
@@ -142,7 +164,7 @@ func (h *ChatHandler) AddSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.store.AddSessionMapping(r.Context(), req.MemberID, req.SessionID, req.SessionTitle, req.Mode)
+	err := h.store.AddSessionMapping(r.Context(), memberID, req.SessionID, req.SessionTitle, req.Mode)
 	if err != nil {
 		log.Printf("[ChatHandler] AddSession error: %v", err)
 		chatWriteError(w, http.StatusInternalServerError, err.Error())
@@ -155,15 +177,18 @@ func (h *ChatHandler) AddSession(w http.ResponseWriter, r *http.Request) {
 // When a WsHandler is configured, it queries the live WebSocket session;
 // otherwise it returns "idle".
 func (h *ChatHandler) GetSessionStatus(w http.ResponseWriter, r *http.Request) {
+	memberID, ok := memberIDFromHeader(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
-		MemberID  string `json:"memberID"`
 		SessionID string `json:"sessionID"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	status := "idle"
 	if h.wsHandler != nil {
-		status = h.wsHandler.GetSessionStatus(req.MemberID, req.SessionID)
+		status = h.wsHandler.GetSessionStatus(memberID, req.SessionID)
 	}
 	chatWriteJSON(w, http.StatusOK, map[string]string{"status": status})
 }
