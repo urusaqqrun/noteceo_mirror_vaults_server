@@ -192,8 +192,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	sessionKey := memberID + ":" + sessionID
 	h.sessions.Store(sessionKey, session)
 
-	// 設定 pong handler：收到 pong 就延長 read deadline
-	conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	// pong handler：收到 pong 就延長 read deadline（只在 asking 狀態下有意義）
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(wsPongWait))
 		return nil
@@ -211,7 +210,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// 心跳 goroutine：定期發 WebSocket ping frame 保持連線
+	// 心跳 goroutine：只在 AI 回應中（asking）才發 ping，閒置時不打
 	go func() {
 		ticker := time.NewTicker(wsPingInterval)
 		defer ticker.Stop()
@@ -219,10 +218,14 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-ticker.C:
 				session.mu.Lock()
-				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait))
-				session.mu.Unlock()
-				if err != nil {
-					return
+				if session.status == "asking" {
+					err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait))
+					session.mu.Unlock()
+					if err != nil {
+						return
+					}
+				} else {
+					session.mu.Unlock()
 				}
 			case <-session.done:
 				return
@@ -393,11 +396,13 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 
 	session.mu.Lock()
 	session.status = "asking"
+	session.conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	session.mu.Unlock()
 
 	defer func() {
 		session.mu.Lock()
 		session.status = "idle"
+		session.conn.SetReadDeadline(time.Time{})
 		session.mu.Unlock()
 	}()
 
