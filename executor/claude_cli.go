@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -255,6 +256,16 @@ type StreamCLI struct {
 func NewStreamCLI(workDir, scope, userID, sessionID, model string, resume bool, idleTTL time.Duration) (*StreamCLI, error) {
 	funcStart := time.Now()
 
+	// 清理可能殘留的 session lock file（CLI 被 kill 後 lock 不會自動清除）
+	if sessionID != "" {
+		cleanStaleSessionLock(workDir, sessionID)
+	}
+
+	// 診斷：計算當前正在跑的 claude process 數量
+	if out, err := exec.Command("pgrep", "-c", "claude").Output(); err == nil {
+		log.Printf("[StreamCLI-diag] current claude process count: %s", strings.TrimSpace(string(out)))
+	}
+
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -441,6 +452,40 @@ func (s *StreamCLI) SessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessionID
+}
+
+// cleanStaleSessionLock removes session lock files left by killed CLI processes.
+// Searches multiple possible lock locations used by Claude CLI.
+func cleanStaleSessionLock(workDir, sessionID string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	encodedWorkDir := encodeProjectPath(workDir)
+
+	// Possible lock file locations
+	candidates := []string{
+		filepath.Join(homeDir, ".claude", "projects", encodedWorkDir, "sessions", sessionID+".lock"),
+		filepath.Join(homeDir, ".claude", "sessions", sessionID+".lock"),
+		filepath.Join(workDir, ".claude", "sessions", sessionID+".lock"),
+	}
+
+	for _, path := range candidates {
+		if err := os.Remove(path); err == nil {
+			log.Printf("[StreamCLI] cleaned stale lock: %s", path)
+		}
+	}
+
+	// Also scan the project sessions dir for any .lock files and log them
+	sessionsDir := filepath.Join(homeDir, ".claude", "projects", encodedWorkDir, "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".lock") {
+				log.Printf("[StreamCLI] found lock file in sessions dir: %s", e.Name())
+			}
+		}
+	}
 }
 
 func (s *StreamCLI) resetIdleTimer() {
