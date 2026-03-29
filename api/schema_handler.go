@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -187,32 +186,16 @@ func updateUserClaudeMD(vaultFS mirror.VaultFS, memberID string) {
 	}
 }
 
-// extractMemberIDFromAuth 從 Authorization header 的 JWT payload 取 user_id
-func extractMemberIDFromAuth(auth string) string {
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == auth || token == "" {
+// extractMemberIDFromAuth 從 Authorization header 驗證 JWT 並取 user_id
+func extractMemberIDFromAuth(authHeader string) string {
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if token == authHeader || token == "" {
 		return ""
 	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return ""
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := verifyJWT(token)
 	if err != nil {
-		payload, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
-		}
-	}
-	var claims struct {
-		UserID string `json:"user_id"`
-		Sub    string `json:"sub"`
-	}
-	if json.Unmarshal(payload, &claims) != nil {
+		log.Printf("[Auth] JWT verification failed: %v", err)
 		return ""
 	}
-	if claims.UserID != "" {
-		return claims.UserID
-	}
-	return claims.Sub
+	return claims.UserID
 }

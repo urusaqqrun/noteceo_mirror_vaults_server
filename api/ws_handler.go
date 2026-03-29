@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/urusaqqrun/vault-mirror-service/database"
 	"github.com/urusaqqrun/vault-mirror-service/executor"
@@ -96,11 +96,18 @@ func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 
 // HandleWarmup pre-warms a CLI process into the pool.
 func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
-	memberID := r.URL.Query().Get("memberID")
-	if memberID == "" {
-		http.Error(w, "memberID required", 400)
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "token required", 401)
 		return
 	}
+	claims, err := verifyJWT(token)
+	if err != nil {
+		log.Printf("[Warmup] JWT verification failed: %v", err)
+		http.Error(w, "invalid token", 401)
+		return
+	}
+	memberID := claims.UserID
 	model := r.URL.Query().Get("model")
 
 	if val, ok := h.cliPool.Load(memberID); ok {
@@ -138,26 +145,23 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 // HandleWebSocket upgrades an HTTP connection to WebSocket and starts the read loop.
 func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	memberID := q.Get("memberID")
 	sessionID := q.Get("sessionID")
 	mode := q.Get("mode")
 	model := q.Get("model")
 	token := q.Get("token")
 
-	if memberID == "" {
-		http.Error(w, "memberID required", 400)
-		return
-	}
-
 	if token == "" {
 		http.Error(w, "token required", 401)
 		return
 	}
-	jwtRole := extractJWTRole(token)
-	if jwtRole == "guest" {
-		http.Error(w, "guest users cannot use AI features", 403)
+
+	claims, err := verifyJWT(token)
+	if err != nil {
+		log.Printf("[WS] JWT verification failed: %v", err)
+		http.Error(w, "invalid token", 401)
 		return
 	}
+	memberID := claims.UserID
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1193,23 +1197,39 @@ func (h *WsHandler) recordBilling(memberID, mode, sessionID string, resultEvent 
 		modelName, int(inputTokens), int(outputTokens), int(cacheCreation), int(cacheRead))
 }
 
-func extractJWTRole(token string) string {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return ""
+// jwtClaims 對應 membercenter 簽發的 JWT 結構
+type jwtClaims struct {
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	TokenType string `json:"token_type"`
+	jwt.RegisteredClaims
+}
+
+// verifyJWT 驗證 JWT 簽名並回傳 claims；驗簽失敗回傳 error。
+func verifyJWT(tokenStr string) (*jwtClaims, error) {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		return nil, fmt.Errorf("JWT_SECRET not configured")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payload, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
+
+	claims := &jwtClaims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("JWT parse error: %w", err)
 	}
-	var claims struct {
-		Role string `json:"role"`
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid JWT token")
 	}
-	if json.Unmarshal(payload, &claims) != nil {
-		return ""
+	if claims.TokenType != "access" {
+		return nil, fmt.Errorf("invalid token type: %s", claims.TokenType)
 	}
-	return claims.Role
+	if claims.UserID == "" {
+		return nil, fmt.Errorf("missing user_id in JWT")
+	}
+	return claims, nil
 }
