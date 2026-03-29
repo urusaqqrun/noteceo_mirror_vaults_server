@@ -304,6 +304,7 @@ type StreamCLI struct {
 	stdin     io.WriteCloser
 	stdout    *bufio.Scanner
 	mu        sync.Mutex
+	timerMu   sync.Mutex // 專門保護 idleTimer，避免 stdout goroutine 與 Kill/SendMessage 競爭
 	workDir    string
 	sessionID  string
 	alive      bool
@@ -447,6 +448,7 @@ func (s *StreamCLI) SendMessage(content interface{}) (<-chan StreamEvent, error)
 			if line == "" {
 				continue
 			}
+			s.resetIdleTimer()
 			ch <- StreamEvent{Type: "stdout", Data: line}
 
 			var parsed map[string]interface{}
@@ -478,11 +480,14 @@ func (s *StreamCLI) SendMessage(content interface{}) (<-chan StreamEvent, error)
 }
 
 func (s *StreamCLI) Kill() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.timerMu.Lock()
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
 	}
+	s.timerMu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.alive && s.cmd.Process != nil {
 		log.Printf("[StreamCLI] killing pid=%d", s.cmd.Process.Pid)
 		_ = s.cmd.Process.Kill()
@@ -545,6 +550,8 @@ func cleanStaleSessionLock(workDir, sessionID string) {
 }
 
 func (s *StreamCLI) resetIdleTimer() {
+	s.timerMu.Lock()
+	defer s.timerMu.Unlock()
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
 	}
