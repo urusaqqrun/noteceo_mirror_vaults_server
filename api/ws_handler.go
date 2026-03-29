@@ -478,6 +478,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	accumulatedText := ""
 	accumulatedThinking := ""
 	sentToolUseIDs := map[string]bool{}
+	var accumulatedToolCalls []map[string]interface{}
 	var tokenUsage json.RawMessage
 
 	cliReadySent := false
@@ -589,37 +590,48 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 									"accumulated": accumulatedThinking,
 								})
 							}
-					case "tool_use":
-						toolID, _ := blockMap["id"].(string)
-						if toolID != "" && sentToolUseIDs[toolID] {
-							continue
-						}
-						sentToolUseIDs[toolID] = true
-						inputJSON, _ := json.Marshal(blockMap["input"])
-						session.Send(map[string]interface{}{
-							"type":    "message",
-							"role":    "assistant",
-							"content": "",
-							"tool_calls": []map[string]interface{}{{
-								"id":   toolID,
-								"type": "function",
-								"function": map[string]interface{}{
-									"name":      blockMap["name"],
-									"arguments": string(inputJSON),
-								},
-							}},
-						})
+				case "tool_use":
+					toolID, _ := blockMap["id"].(string)
+					if toolID != "" && sentToolUseIDs[toolID] {
+						continue
+					}
+					sentToolUseIDs[toolID] = true
+					inputJSON, _ := json.Marshal(blockMap["input"])
+					tc := map[string]interface{}{
+						"id":   toolID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      blockMap["name"],
+							"arguments": string(inputJSON),
+						},
+					}
+					accumulatedToolCalls = append(accumulatedToolCalls, tc)
+					session.Send(map[string]interface{}{
+						"type":       "message",
+						"role":       "assistant",
+						"content":    "",
+						"tool_calls": []map[string]interface{}{tc},
+					})
 						}
 					}
 				}
 			}
 
 		case eventType == "result" && subtype == "tool_result":
+			toolCallID, _ := parsed["tool_use_id"].(string)
+			toolContent, _ := parsed["content"].(string)
 			session.Send(map[string]interface{}{
 				"type":         "message",
 				"role":         "tool",
-				"content":      parsed["content"],
-				"tool_call_id": parsed["tool_use_id"],
+				"content":      toolContent,
+				"tool_call_id": toolCallID,
+			})
+			h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+				SessionID:  session.sessionID,
+				Mode:       session.mode,
+				Role:       "tool",
+				Content:    toolContent,
+				ToolCallID: toolCallID,
 			})
 
 		case eventType == "user":
@@ -631,11 +643,20 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 							continue
 						}
 						if blockMap["type"] == "tool_result" {
+							tcID, _ := blockMap["tool_use_id"].(string)
+							tcContent, _ := blockMap["content"].(string)
 							session.Send(map[string]interface{}{
 								"type":         "message",
 								"role":         "tool",
-								"content":      blockMap["content"],
-								"tool_call_id": blockMap["tool_use_id"],
+								"content":      tcContent,
+								"tool_call_id": tcID,
+							})
+							h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+								SessionID:  session.sessionID,
+								Mode:       session.mode,
+								Role:       "tool",
+								Content:    tcContent,
+								ToolCallID: tcID,
 							})
 						}
 					}
@@ -696,6 +717,11 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		Content:    accumulatedText,
 		Thinking:   accumulatedThinking,
 		TokenUsage: tokenUsage,
+	}
+	if len(accumulatedToolCalls) > 0 {
+		if b, err := json.Marshal(accumulatedToolCalls); err == nil {
+			assistantMsg.ToolCalls = b
+		}
 	}
 	h.chatStore.InsertChatMessage(context.Background(), assistantMsg)
 
