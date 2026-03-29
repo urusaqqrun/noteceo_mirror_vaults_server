@@ -20,6 +20,9 @@ FROM debian:bullseye-slim
 
 RUN apt-get update && \
     apt-get install -y ca-certificates tzdata bash curl netcat-openbsd jq findutils && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 # 建立非 root 使用者（Claude CLI 拒絕以 root + --dangerously-skip-permissions 運行）

@@ -94,6 +94,10 @@
                 {
                     "name": "SERPER_API_KEY",
                     "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/cubelv/SERPER_API_KEY"
+                },
+                {
+                    "name": "JWT_SECRET",
+                    "valueFrom": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/membercenter/JWT_SECRET"
                 }
             ],
             "logConfiguration": {

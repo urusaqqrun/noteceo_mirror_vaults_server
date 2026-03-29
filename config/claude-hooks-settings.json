@@ -39,12 +39,12 @@
         ]
       },
       {
-        "matcher": "LS|Glob|Grep|MultiEdit",
+        "matcher": "WebSearch|WebFetch",
         "hooks": [
           {
             "type": "command",
-            "command": "/app/config/hooks/pre-ls-glob-grep-validate.sh",
-            "timeout": 10
+            "command": "echo '{\"decision\":\"block\",\"reason\":\"禁止使用內建 WebSearch/WebFetch，請改用 MCP web_search 工具（serper-search server）\"}'",
+            "timeout": 5
           }
         ]
       }

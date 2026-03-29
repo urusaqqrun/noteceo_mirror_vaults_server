@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/urusaqqrun/vault-mirror-service/database"
 	"github.com/urusaqqrun/vault-mirror-service/executor"
@@ -96,11 +96,19 @@ func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 
 // HandleWarmup pre-warms a CLI process into the pool.
 func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
-	memberID := r.URL.Query().Get("memberID")
-	if memberID == "" {
-		http.Error(w, "memberID required", 400)
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "token required", 401)
 		return
 	}
+	token = strings.TrimPrefix(token, "Bearer ")
+	claims, err := verifyJWT(token)
+	if err != nil {
+		log.Printf("[Warmup] JWT verification failed: %v", err)
+		http.Error(w, "invalid token", 401)
+		return
+	}
+	memberID := claims.UserID
 	model := r.URL.Query().Get("model")
 
 	if val, ok := h.cliPool.Load(memberID); ok {
@@ -138,26 +146,26 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 // HandleWebSocket upgrades an HTTP connection to WebSocket and starts the read loop.
 func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	memberID := q.Get("memberID")
 	sessionID := q.Get("sessionID")
 	mode := q.Get("mode")
 	model := q.Get("model")
 	token := q.Get("token")
-
-	if memberID == "" {
-		http.Error(w, "memberID required", 400)
-		return
-	}
+	timezone := q.Get("timezone")
+	lang := q.Get("lang")
 
 	if token == "" {
 		http.Error(w, "token required", 401)
 		return
 	}
-	jwtRole := extractJWTRole(token)
-	if jwtRole == "guest" {
-		http.Error(w, "guest users cannot use AI features", 403)
+	token = strings.TrimPrefix(token, "Bearer ")
+
+	claims, err := verifyJWT(token)
+	if err != nil {
+		log.Printf("[WS] JWT verification failed: %v", err)
+		http.Error(w, "invalid token", 401)
 		return
 	}
+	memberID := claims.UserID
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -194,9 +202,17 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	isNew := q.Get("isNew") == "true"
 
+	// Inject timezone & lang into user CLAUDE.md
+	if timezone != "" || lang != "" {
+		h.updateUserLocale(memberID, timezone, lang)
+	}
+
 	go func() {
 		wsCliStart := time.Now()
 		workDir := filepath.Join(h.vaultRoot, memberID)
+
+		// 限制同一 user 最多 3 個活躍 CLI，超過時 kill 最舊的
+		h.enforceMaxCLIs(memberID, 3)
 
 		if isNew {
 			if val, loaded := h.cliPool.LoadAndDelete(memberID); loaded {
@@ -824,6 +840,94 @@ func (h *WsHandler) updateDBSnapshot(memberID string, afterSnap map[string]execu
 		len(upserts), len(deletes), time.Since(start).Milliseconds(), memberID)
 }
 
+// updateUserLocale writes timezone & lang into the user's vault CLAUDE.md using markers.
+// Only updates if values changed to avoid unnecessary writes on reconnect.
+func (h *WsHandler) updateUserLocale(memberID, timezone, lang string) {
+	claudeMDPath := filepath.Join(memberID, "CLAUDE.md")
+
+	// Build new locale block
+	var lines []string
+	if timezone != "" {
+		lines = append(lines, fmt.Sprintf("用戶時區：%s", timezone))
+	}
+	if lang != "" {
+		lines = append(lines, fmt.Sprintf("回應語言：%s", lang))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	newBlock := "<!-- LOCALE:START -->\n## 用戶地區設定\n" + strings.Join(lines, "\n") + "\n<!-- LOCALE:END -->"
+
+	existing, err := h.vaultFS.ReadFile(claudeMDPath)
+	if err != nil {
+		// No user CLAUDE.md yet — create with locale block
+		content := fmt.Sprintf("# 用戶個人化設定\n\n%s\n\n<!-- AIHINTS:START -->\n<!-- AIHINTS:END -->\n\n<!-- AI_MEMORY:START -->\n<!-- AI_MEMORY:END -->\n", newBlock)
+		h.vaultFS.WriteFile(claudeMDPath, []byte(content))
+		return
+	}
+
+	content := string(existing)
+	startMarker := "<!-- LOCALE:START -->"
+	endMarker := "<!-- LOCALE:END -->"
+	startIdx := strings.Index(content, startMarker)
+	endIdx := strings.Index(content, endMarker)
+
+	if startIdx >= 0 && endIdx >= 0 && endIdx > startIdx {
+		// Check if unchanged
+		oldBlock := content[startIdx : endIdx+len(endMarker)]
+		if oldBlock == newBlock {
+			return // no change
+		}
+		// Replace
+		content = content[:startIdx] + newBlock + content[endIdx+len(endMarker):]
+	} else {
+		// Insert after title line or at beginning
+		titleEnd := strings.Index(content, "\n\n")
+		if titleEnd >= 0 {
+			content = content[:titleEnd+2] + newBlock + "\n\n" + content[titleEnd+2:]
+		} else {
+			content = newBlock + "\n\n" + content
+		}
+	}
+
+	h.vaultFS.WriteFile(claudeMDPath, []byte(content))
+}
+
+// enforceMaxCLIs kills oldest CLIs for a user if they exceed maxCount.
+func (h *WsHandler) enforceMaxCLIs(memberID string, maxCount int) {
+	type sessionEntry struct {
+		key     string
+		session *WsSession
+	}
+	var userSessions []sessionEntry
+
+	h.sessions.Range(func(key, val any) bool {
+		s := val.(*WsSession)
+		if s.memberID == memberID {
+			s.mu.Lock()
+			alive := s.cli != nil && s.cli.IsAlive()
+			s.mu.Unlock()
+			if alive {
+				userSessions = append(userSessions, sessionEntry{key: key.(string), session: s})
+			}
+		}
+		return true
+	})
+
+	// Kill oldest sessions until within limit (leave room for the new one)
+	for len(userSessions) >= maxCount {
+		oldest := userSessions[0]
+		userSessions = userSessions[1:]
+		oldest.session.mu.Lock()
+		if oldest.session.cli != nil {
+			log.Printf("[WS] enforceMaxCLIs: killing CLI pid=%d for member=%s (over limit %d)",
+				oldest.session.cli.Pid(), memberID, maxCount)
+			oldest.session.cli.Kill()
+		}
+		oldest.session.mu.Unlock()
+	}
+}
+
 // ensureCLI returns an alive StreamCLI, rebuilding with --resume if needed.
 func (h *WsHandler) ensureCLI(session *WsSession) *executor.StreamCLI {
 	session.mu.Lock()
@@ -989,22 +1093,8 @@ func buildInstruction(messageText string, msgObj map[string]interface{}, pageCtx
 	var parts []string
 	parts = append(parts, messageText)
 
-	// 1. pageContext → 告訴 AI 用戶當前在看什麼
-	if pageCtx != nil {
-		if folder, ok := pageCtx["folder"].(map[string]interface{}); ok {
-			pageID, _ := folder["pageId"].(string)
-			pageName, _ := folder["pageName"].(string)
-			pageType, _ := folder["pageType"].(string)
-			parts = append(parts, fmt.Sprintf("\n[目前所在資料夾] ID: %s, 名稱: %s, 類型: %s", pageID, pageName, pageType))
-		}
-		if item, ok := pageCtx["item"].(map[string]interface{}); ok {
-			pageID, _ := item["pageId"].(string)
-			pageName, _ := item["pageName"].(string)
-			parts = append(parts, fmt.Sprintf("\n[目前選取項目] ID: %s, 名稱: %s", pageID, pageName))
-		}
-	}
-
-	// 2. attachedItems → 非圖片項目直接序列化為完整 JSON（保留所有欄位）
+	// 收集附加項目（非圖片）
+	var attachedParts []string
 	if msgObj != nil {
 		if items, ok := msgObj["attachedItems"].([]interface{}); ok {
 			for _, raw := range items {
@@ -1016,12 +1106,29 @@ func buildInstruction(messageText string, msgObj map[string]interface{}, pageCtx
 				if itemType == "image" {
 					continue // 圖片由 buildContentBlocks 處理
 				}
-				// 直接將完整 item 序列化為 JSON，保留所有欄位（content、tags 等）
 				itemJSON, err := json.Marshal(item)
 				if err == nil {
-					parts = append(parts, fmt.Sprintf("\n[附加項目]\n%s", string(itemJSON)))
+					attachedParts = append(attachedParts, fmt.Sprintf("\n[附加項目]\n%s", string(itemJSON)))
 				}
 			}
+		}
+	}
+
+	// 有附加項目時不加 pageContext（附加項目本身就是上下文，避免混淆）
+	if len(attachedParts) > 0 {
+		parts = append(parts, attachedParts...)
+	} else if pageCtx != nil {
+		// 無附加項目時才加 pageContext（資料夾 + 選取項目）
+		if folder, ok := pageCtx["folder"].(map[string]interface{}); ok {
+			pageID, _ := folder["pageId"].(string)
+			pageName, _ := folder["pageName"].(string)
+			pageType, _ := folder["pageType"].(string)
+			parts = append(parts, fmt.Sprintf("\n[目前所在資料夾] ID: %s, 名稱: %s, 類型: %s", pageID, pageName, pageType))
+		}
+		if item, ok := pageCtx["item"].(map[string]interface{}); ok {
+			pageID, _ := item["pageId"].(string)
+			pageName, _ := item["pageName"].(string)
+			parts = append(parts, fmt.Sprintf("\n[目前選取項目] ID: %s, 名稱: %s", pageID, pageName))
 		}
 	}
 
@@ -1199,23 +1306,39 @@ func (h *WsHandler) recordBilling(memberID, mode, sessionID string, resultEvent 
 		modelName, int(inputTokens), int(outputTokens), int(cacheCreation), int(cacheRead))
 }
 
-func extractJWTRole(token string) string {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return ""
+// jwtClaims 對應 membercenter 簽發的 JWT 結構
+type jwtClaims struct {
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	TokenType string `json:"token_type"`
+	jwt.RegisteredClaims
+}
+
+// verifyJWT 驗證 JWT 簽名並回傳 claims；驗簽失敗回傳 error。
+func verifyJWT(tokenStr string) (*jwtClaims, error) {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		return nil, fmt.Errorf("JWT_SECRET not configured")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payload, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
+
+	claims := &jwtClaims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("JWT parse error: %w", err)
 	}
-	var claims struct {
-		Role string `json:"role"`
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid JWT token")
 	}
-	if json.Unmarshal(payload, &claims) != nil {
-		return ""
+	if claims.TokenType != "access" {
+		return nil, fmt.Errorf("invalid token type: %s", claims.TokenType)
 	}
-	return claims.Role
+	if claims.UserID == "" {
+		return nil, fmt.Errorf("missing user_id in JWT")
+	}
+	return claims, nil
 }

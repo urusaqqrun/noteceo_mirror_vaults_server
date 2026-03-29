@@ -12,9 +12,11 @@ func ItemToMirrorData(item *model.Item) ItemMirrorData {
 	}
 	// 深拷貝 Fields 避免共用 map reference 導致原始 Item 被異動
 	// parentID 不寫入 JSON，父子關係由目錄結構決定
+	// 過濾系統自動管理的欄位：parentID（目錄結構決定）、createdAt/updatedAt（writeback 自動設定）
+	skipFields := map[string]bool{"parentID": true, "createdAt": true, "updatedAt": true}
 	fields := make(map[string]interface{}, len(item.Fields))
 	for k, v := range item.Fields {
-		if k == "parentID" {
+		if skipFields[k] {
 			continue
 		}
 		fields[k] = v
