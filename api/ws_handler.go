@@ -101,6 +101,7 @@ func (h *WsHandler) HandleWarmup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token required", 401)
 		return
 	}
+	token = strings.TrimPrefix(token, "Bearer ")
 	claims, err := verifyJWT(token)
 	if err != nil {
 		log.Printf("[Warmup] JWT verification failed: %v", err)
@@ -154,6 +155,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token required", 401)
 		return
 	}
+	token = strings.TrimPrefix(token, "Bearer ")
 
 	claims, err := verifyJWT(token)
 	if err != nil {
