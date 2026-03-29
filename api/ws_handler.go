@@ -394,6 +394,12 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		return
 	}
 
+	// noSave: 跳過所有 DB 寫入（用於卡片自動補完等一次性操作）
+	noSave := false
+	if msgObj != nil {
+		noSave, _ = msgObj["noSave"].(bool)
+	}
+
 	session.mu.Lock()
 	session.status = "asking"
 	session.conn.SetReadDeadline(time.Now().Add(wsPongWait))
@@ -407,21 +413,22 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	}()
 
 	// 1. Save user message
-	userMsg := &database.ChatMessage{
-		SessionID: session.sessionID,
-		Mode:      session.mode,
-		Role:      "user",
-		Content:   messageText,
-	}
-	// attachedItems 在 msg["message"] 內，不在頂層
-	if msgObj != nil {
-		if items, ok := msgObj["attachedItems"]; ok {
-			if b, err := json.Marshal(items); err == nil {
-				userMsg.AttachedItems = b
+	if !noSave {
+		userMsg := &database.ChatMessage{
+			SessionID: session.sessionID,
+			Mode:      session.mode,
+			Role:      "user",
+			Content:   messageText,
+		}
+		if msgObj != nil {
+			if items, ok := msgObj["attachedItems"]; ok {
+				if b, err := json.Marshal(items); err == nil {
+					userMsg.AttachedItems = b
+				}
 			}
 		}
+		h.chatStore.InsertChatMessage(context.Background(), userMsg)
 	}
-	h.chatStore.InsertChatMessage(context.Background(), userMsg)
 
 	// 2. Ensure StreamCLI is alive
 	ensureStart := time.Now()
@@ -643,13 +650,15 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				"content":      toolContent,
 				"tool_call_id": toolCallID,
 			})
-			h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
-				SessionID:  session.sessionID,
-				Mode:       session.mode,
-				Role:       "tool",
-				Content:    toolContent,
-				ToolCallID: toolCallID,
-			})
+			if !noSave {
+				h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+					SessionID:  session.sessionID,
+					Mode:       session.mode,
+					Role:       "tool",
+					Content:    toolContent,
+					ToolCallID: toolCallID,
+				})
+			}
 
 		case eventType == "user":
 			if msgContent, ok := parsed["message"].(map[string]interface{}); ok {
@@ -668,13 +677,15 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 								"content":      tcContent,
 								"tool_call_id": tcID,
 							})
-							h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
-								SessionID:  session.sessionID,
-								Mode:       session.mode,
-								Role:       "tool",
-								Content:    tcContent,
-								ToolCallID: tcID,
-							})
+							if !noSave {
+								h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+									SessionID:  session.sessionID,
+									Mode:       session.mode,
+									Role:       "tool",
+									Content:    tcContent,
+									ToolCallID: tcID,
+								})
+							}
 						}
 					}
 				}
@@ -742,27 +753,31 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	}
 
 	// 7. Save assistant message
-	assistantMsg := &database.ChatMessage{
-		SessionID:  session.sessionID,
-		Mode:       session.mode,
-		Role:       "assistant",
-		Content:    accumulatedText,
-		Thinking:   accumulatedThinking,
-		TokenUsage: tokenUsage,
-	}
-	if len(accumulatedToolCalls) > 0 {
-		if b, err := json.Marshal(accumulatedToolCalls); err == nil {
-			assistantMsg.ToolCalls = b
+	var assistantMsgID interface{}
+	if !noSave {
+		assistantMsg := &database.ChatMessage{
+			SessionID:  session.sessionID,
+			Mode:       session.mode,
+			Role:       "assistant",
+			Content:    accumulatedText,
+			Thinking:   accumulatedThinking,
+			TokenUsage: tokenUsage,
 		}
+		if len(accumulatedToolCalls) > 0 {
+			if b, err := json.Marshal(accumulatedToolCalls); err == nil {
+				assistantMsg.ToolCalls = b
+			}
+		}
+		h.chatStore.InsertChatMessage(context.Background(), assistantMsg)
+		assistantMsgID = assistantMsg.ID
 	}
-	h.chatStore.InsertChatMessage(context.Background(), assistantMsg)
 
 	// 8. stream_end
 	session.Send(map[string]interface{}{
 		"type":           "stream_end",
 		"memberID":       session.memberID,
 		"final_response": accumulatedText,
-		"checkpoint_id":  assistantMsg.ID,
+		"checkpoint_id":  assistantMsgID,
 		"token_usage":    tokenUsage,
 	})
 
@@ -823,7 +838,9 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 
 		// 10. Generate session title (fire-and-forget)
-		h.maybeGenerateTitle(session, messageText, accumulatedText)
+		if !noSave {
+			h.maybeGenerateTitle(session, messageText, accumulatedText)
+		}
 	}()
 }
 
