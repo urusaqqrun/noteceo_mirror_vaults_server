@@ -974,10 +974,16 @@ func (h *WsHandler) rebuildSessionJSONL(session *WsSession, workDir string) {
 
 func (h *WsHandler) handleInterrupt(session *WsSession) {
 	session.mu.Lock()
-	if session.cli != nil {
-		session.cli.Kill()
-	}
+	cli := session.cli
 	session.mu.Unlock()
+
+	if cli != nil {
+		if !cli.Interrupt() {
+			// SIGINT failed (process already dead), fall back to Kill
+			log.Printf("[WS] interrupt: SIGINT failed, falling back to Kill")
+			cli.Kill()
+		}
+	}
 
 	session.Send(map[string]interface{}{
 		"type":     "stream_interrupted",

@@ -421,6 +421,23 @@ func (s *StreamCLI) SendMessage(content interface{}) (<-chan StreamEvent, error)
 	return ch, nil
 }
 
+// Interrupt sends SIGINT to the CLI process to abort the current response.
+// Unlike Kill(), the process stays alive and can accept new messages.
+func (s *StreamCLI) Interrupt() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.alive || s.cmd.Process == nil {
+		return false
+	}
+	log.Printf("[StreamCLI] interrupting pid=%d (SIGINT)", s.cmd.Process.Pid)
+	if err := s.cmd.Process.Signal(os.Interrupt); err != nil {
+		log.Printf("[StreamCLI] SIGINT failed: %v", err)
+		return false
+	}
+	s.resetIdleTimer()
+	return true
+}
+
 func (s *StreamCLI) Kill() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
