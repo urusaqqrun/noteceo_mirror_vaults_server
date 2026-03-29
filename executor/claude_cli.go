@@ -16,6 +16,78 @@ import (
 	"time"
 )
 
+// bwrapAvailable 表示 bubblewrap 沙箱是否可用（在 init 時偵測）
+var bwrapAvailable bool
+
+func init() {
+	bwrapPath, err := exec.LookPath("bwrap")
+	if err != nil {
+		log.Printf("[Sandbox] bwrap not found, filesystem sandboxing disabled")
+		return
+	}
+	testCmd := exec.Command(bwrapPath, "--bind", "/", "/", "--", "/bin/echo", "bwrap-test")
+	output, err := testCmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[Sandbox] bwrap not functional (namespace restriction?): %v — %s", err, strings.TrimSpace(string(output)))
+	} else {
+		bwrapAvailable = true
+		log.Printf("[Sandbox] bwrap available — filesystem sandboxing enabled")
+	}
+}
+
+// buildBwrapArgs 產生 bwrap 沙箱參數：隱藏 /vaults/，只暴露當前用戶 vault + shared
+func buildBwrapArgs(vaultRoot, userID, workDir string) []string {
+	vaultDir := filepath.Join(vaultRoot, userID)
+	sharedDir := filepath.Join(vaultRoot, "shared")
+
+	args := []string{
+		"--bind", "/", "/",
+		"--tmpfs", vaultRoot,
+		"--bind", vaultDir, vaultDir,
+	}
+	if _, err := os.Stat(sharedDir); err == nil {
+		args = append(args, "--ro-bind", sharedDir, sharedDir)
+	}
+	args = append(args, "--chdir", workDir)
+	return args
+}
+
+// newClaudeCmd 建立 claude CLI 指令，在 bwrap 可用時自動包裝沙箱
+func newClaudeCmd(ctx context.Context, workDir, scope, userID string, claudeArgs []string) *exec.Cmd {
+	vaultRoot := os.Getenv("VAULT_ROOT")
+	if vaultRoot == "" {
+		vaultRoot = "/vaults"
+	}
+
+	var cmd *exec.Cmd
+
+	if bwrapAvailable {
+		bwrapPath, _ := exec.LookPath("bwrap")
+		claudePath, _ := exec.LookPath("claude")
+		bwrapArgs := buildBwrapArgs(vaultRoot, userID, workDir)
+		fullArgs := append(bwrapArgs, "--", claudePath)
+		fullArgs = append(fullArgs, claudeArgs...)
+		if ctx != nil {
+			cmd = exec.CommandContext(ctx, bwrapPath, fullArgs...)
+		} else {
+			cmd = exec.Command(bwrapPath, fullArgs...)
+		}
+	} else {
+		if ctx != nil {
+			cmd = exec.CommandContext(ctx, "claude", claudeArgs...)
+		} else {
+			cmd = exec.Command("claude", claudeArgs...)
+		}
+		cmd.Dir = workDir
+	}
+
+	cmd.Env = append(os.Environ(),
+		"TASK_SCOPE="+scope,
+		"VAULT_USER_ID="+userID,
+	)
+	return cmd
+}
+
 // ClaudeExecutor 管理 Claude CLI process
 type ClaudeExecutor struct {
 	maxConcurrent int
@@ -57,7 +129,6 @@ func (e *ClaudeExecutor) ExecuteTask(ctx context.Context, taskID, workDir, instr
 	execCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	// 構建 Claude CLI 命令
 	args := []string{
 		"--print",
 		"--dangerously-skip-permissions",
@@ -65,12 +136,7 @@ func (e *ClaudeExecutor) ExecuteTask(ctx context.Context, taskID, workDir, instr
 		"-p", instruction,
 	}
 
-	cmd := exec.CommandContext(execCtx, "claude", args...)
-	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(),
-		"TASK_SCOPE="+scope,
-		"VAULT_USER_ID="+userID,
-	)
+	cmd := newClaudeCmd(execCtx, workDir, scope, userID, args)
 
 	e.mu.Lock()
 	e.processes[taskID] = cmd
@@ -162,12 +228,7 @@ func (e *ClaudeExecutor) ExecuteTaskStream(
 		"-p", instruction,
 	}
 
-	cmd := exec.CommandContext(execCtx, "claude", args...)
-	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(),
-		"TASK_SCOPE="+scope,
-		"VAULT_USER_ID="+userID,
-	)
+	cmd := newClaudeCmd(execCtx, workDir, scope, userID, args)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -290,12 +351,7 @@ func NewStreamCLI(workDir, scope, userID, sessionID, model string, resume bool, 
 		}
 	}
 
-	cmd := exec.Command("claude", args...)
-	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(),
-		"TASK_SCOPE="+scope,
-		"VAULT_USER_ID="+userID,
-	)
+	cmd := newClaudeCmd(nil, workDir, scope, userID, args)
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -340,8 +396,8 @@ func NewStreamCLI(workDir, scope, userID, sessionID, model string, resume bool, 
 	}
 	s.resetIdleTimer()
 
-	log.Printf("[CacheProfile] NewStreamCLI total — %dms, pid=%d, workDir=%s, sessionID=%s, resume=%v",
-		time.Since(funcStart).Milliseconds(), cmd.Process.Pid, workDir, sessionID, resume)
+	log.Printf("[CacheProfile] NewStreamCLI total — %dms, pid=%d, workDir=%s, sessionID=%s, resume=%v, bwrap=%v",
+		time.Since(funcStart).Milliseconds(), cmd.Process.Pid, workDir, sessionID, resume, bwrapAvailable)
 	return s, nil
 }
 

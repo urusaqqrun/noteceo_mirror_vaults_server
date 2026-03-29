@@ -1,6 +1,6 @@
 #!/bin/bash
 # PreToolUse LS|Glob|Grep|MultiEdit 路徑驗證
-# 禁止存取工作目錄（當前用戶 vault）範圍外的路徑
+# 依據工具類型與路徑權限矩陣決定是否允許
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HOOK_DIR/common.sh"
@@ -20,57 +20,55 @@ fi
 VR="${VAULT_ROOT:-/vaults}"
 SHARED_ROOT="$VR/shared"
 
-# 根據工具類型提取要檢查的路徑
+# 驗證路徑邊界 + 權限矩陣
 check_path() {
   local raw_path="$1"
+  local tool_action="$2"
   [ -z "$raw_path" ] && return 0
 
   local target
   target=$(canonicalize_path "$CWD" "$raw_path")
   [ -z "$target" ] && deny_pretooluse "無法解析目標路徑: $raw_path"
 
-  # shared 目錄允許唯讀存取
+  # shared 目錄：僅允許讀取類操作
   if path_within_root "$target" "$SHARED_ROOT"; then
+    case "$tool_action" in
+      write|delete|move)
+        deny_pretooluse "${SHARED_ROOT}/ 是唯讀目錄，禁止寫入"
+        ;;
+    esac
     return 0
   fi
 
   if ! path_within_root "$target" "$CWD"; then
     deny_pretooluse "禁止存取工作目錄範圍外的路徑: $raw_path"
   fi
+
+  # 檢查路徑權限矩陣
+  check_and_enforce_permission "$target" "$CWD" "$tool_action"
 }
 
 case "$TOOL_NAME" in
   LS)
     FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.path // empty')
-    if [ -z "$FILE_PATH" ]; then
-      exit 0
-    fi
-    check_path "$FILE_PATH"
+    [ -z "$FILE_PATH" ] && exit 0
+    check_path "$FILE_PATH" "list"
     ;;
   Glob)
     PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty')
-    if [ -z "$PATTERN" ]; then
-      exit 0
-    fi
-    # 從 glob pattern 提取路徑前綴（取 * 或 ? 之前的部分）
+    [ -z "$PATTERN" ] && exit 0
     PATH_PREFIX=$(echo "$PATTERN" | sed 's/[*?].*//')
-    if [ -n "$PATH_PREFIX" ]; then
-      check_path "$PATH_PREFIX"
-    fi
+    [ -n "$PATH_PREFIX" ] && check_path "$PATH_PREFIX" "list"
     ;;
   Grep)
     FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.path // empty')
-    if [ -z "$FILE_PATH" ]; then
-      exit 0
-    fi
-    check_path "$FILE_PATH"
+    [ -z "$FILE_PATH" ] && exit 0
+    check_path "$FILE_PATH" "search"
     ;;
   MultiEdit)
     FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-    if [ -z "$FILE_PATH" ]; then
-      exit 0
-    fi
-    check_path "$FILE_PATH"
+    [ -z "$FILE_PATH" ] && exit 0
+    check_path "$FILE_PATH" "write"
     ;;
   *)
     exit 0

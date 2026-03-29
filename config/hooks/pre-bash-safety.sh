@@ -66,10 +66,21 @@ for pattern in "${DANGEROUS_PATTERNS[@]}"; do
   fi
 done
 
-# 規則 2：禁止寫入 shared 目錄（唯讀區域）
+# 規則 2：分類 Bash 命令操作類型
 IS_WRITE_COMMAND=false
-if echo "$NORMALIZED_COMMAND" | grep -qE '(>|>>|(^|[[:space:];|&])(cp|mv|rm|mkdir|touch|install|tee|chmod|chown|ln|sed[[:space:]]+-i|perl[[:space:]]+-pi)([[:space:]]|$))'; then
+BASH_ACTION="read"
+if echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])(rm|rmdir)([[:space:]]|$)'; then
   IS_WRITE_COMMAND=true
+  BASH_ACTION="delete"
+elif echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])mv([[:space:]]|$)'; then
+  IS_WRITE_COMMAND=true
+  BASH_ACTION="move"
+elif echo "$NORMALIZED_COMMAND" | grep -qE '(>|>>|(^|[[:space:];|&])(cp|mkdir|touch|install|tee|chmod|chown|ln|sed[[:space:]]+-i|perl[[:space:]]+-pi)([[:space:]]|$))'; then
+  IS_WRITE_COMMAND=true
+  BASH_ACTION="write"
+elif echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])(python3?|node|ruby|php)[[:space:]]'; then
+  IS_WRITE_COMMAND=true
+  BASH_ACTION="write"
 fi
 
 # 規則 3：Bash 只能存取當前工作目錄或 shared（shared 僅允許讀取）
@@ -87,6 +98,9 @@ while IFS= read -r raw_path; do
   if ! path_within_root "$CANONICAL_PATH" "$CWD"; then
     deny_pretooluse "禁止存取工作目錄外的 vault 路徑"
   fi
+
+  # 檢查路徑權限矩陣
+  check_and_enforce_permission "$CANONICAL_PATH" "$CWD" "$BASH_ACTION"
 done < <(echo "$NORMALIZED_COMMAND" | tr -d "\"'" | grep -oE '/[^[:space:];|&()<>]+' || true)
 
 exit 0

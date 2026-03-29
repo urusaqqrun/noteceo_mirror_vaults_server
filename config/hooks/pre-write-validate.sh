@@ -29,6 +29,10 @@ fi
 if ! path_within_root "$TARGET_PATH" "$CWD"; then
   deny_pretooluse "禁止寫入工作目錄範圍外的路徑"
 fi
+
+# 檢查路徑權限矩陣
+check_and_enforce_permission "$TARGET_PATH" "$CWD" "write"
+
 DIR=$(dirname "$TARGET_PATH")
 
 # plugin scope 只做邊界檢查，不走 vault 規則

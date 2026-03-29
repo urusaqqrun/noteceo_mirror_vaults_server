@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o vault-mirror-service ./mai
 FROM debian:bullseye-slim
 
 RUN apt-get update && \
-    apt-get install -y ca-certificates tzdata bash curl netcat-openbsd jq findutils && \
+    apt-get install -y ca-certificates tzdata bash curl netcat-openbsd jq findutils bubblewrap && \
     rm -rf /var/lib/apt/lists/* && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \

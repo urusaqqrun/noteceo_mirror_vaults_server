@@ -92,3 +92,81 @@ path_within_root() {
       ;;
   esac
 }
+
+# ── 路徑權限矩陣 ──
+
+PERMISSIONS_FILE="/app/config/path-permissions.json"
+
+# 將工具名稱轉換為操作類型
+classify_tool_action() {
+  local tool_name="$1"
+  case "$tool_name" in
+    Read)       echo "read" ;;
+    LS)         echo "list" ;;
+    Glob)       echo "list" ;;
+    Grep)       echo "search" ;;
+    Edit)       echo "write" ;;
+    Write)      echo "write" ;;
+    MultiEdit)  echo "write" ;;
+    *)          echo "unknown" ;;
+  esac
+}
+
+# 將絕對路徑轉為 vault 內相對路徑
+get_vault_relative_path() {
+  local target_path="$1"
+  local cwd="$2"
+  if [ "$target_path" = "$cwd" ]; then
+    echo "."
+    return
+  fi
+  echo "${target_path#$cwd/}"
+}
+
+# 依據權限矩陣檢查操作是否允許（return 0=允許, 1=拒絕）
+enforce_path_permission() {
+  local rel_path="$1"
+  local action="$2"
+
+  if [ ! -f "$PERMISSIONS_FILE" ]; then
+    return 0
+  fi
+
+  local result
+  result=$(jq -r --arg path "$rel_path" --arg action "$action" '
+    . as $config |
+    [($config.rules // [])[] | . as $r | select(
+      ($path | startswith($r.prefix)) or ($path == ($r.prefix | rtrimstr("/")))
+    )]
+    | sort_by(.prefix | length) | reverse
+    | (if length > 0 then .[0] else null end) as $rule
+    | if $rule == null then
+        ($config.default // {}) as $d |
+        if (($d.deny // []) | any(. == $action)) then "denied"
+        elif ($d.allow and (($d.allow // []) | any(. == $action) | not)) then "denied"
+        else "allowed"
+        end
+      else
+        if (($rule.deny // []) | any(. == $action)) then "denied"
+        elif ($rule.allow and (($rule.allow // []) | any(. == $action) | not)) then "denied"
+        else "allowed"
+        end
+      end
+  ' "$PERMISSIONS_FILE" 2>/dev/null)
+
+  [ "$result" != "denied" ]
+}
+
+# 統一權限驗證入口：路徑 + 操作，不通過則 deny
+check_and_enforce_permission() {
+  local target_path="$1"
+  local cwd="$2"
+  local action="$3"
+
+  local rel_path
+  rel_path=$(get_vault_relative_path "$target_path" "$cwd")
+
+  if ! enforce_path_permission "$rel_path" "$action"; then
+    deny_pretooluse "路徑 ${rel_path} 不允許執行 ${action} 操作"
+  fi
+}

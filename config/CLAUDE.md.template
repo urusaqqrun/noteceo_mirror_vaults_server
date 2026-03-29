@@ -8,6 +8,9 @@
 每個 itemType 對應一個檔案（如 .schemas/NOTE.json、.schemas/CARD_FOLDER.json）。
 不要自己猜 itemType 或欄位，只用 .schemas/ 裡定義的。
 
+**`.schemas/` 是唯讀目錄**：只能讀取參考，禁止建立、修改、刪除、搬移其中的檔案。
+若需要更新 schema，必須由系統同步流程處理，不可由你直接修改。
+
 ## 目錄結構
 
 頂層目錄名稱對應 itemType 的前綴（NOTE_FOLDER 和 NOTE 都在 NOTE/ 目錄下）。

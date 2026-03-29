@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "prefix": ".schemas/",
+      "allow": ["read", "list", "search"],
+      "deny": ["write", "delete", "move"]
+    },
+    {
+      "prefix": ".claude/",
+      "deny": ["read", "list", "search", "write", "delete", "move"]
+    }
+  ],
+  "default": {
+    "allow": ["read", "list", "search", "write", "delete", "move"]
+  }
+}

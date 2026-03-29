@@ -62,7 +62,7 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 	}
 
 	filePath := filepath.Join(projectDir, sessionID+".jsonl")
-	cwd := filepath.Join("/vaults", memberID)
+	cwd := workDir
 
 	var lines []string
 	var prevUUID interface{} // null for the first entry
