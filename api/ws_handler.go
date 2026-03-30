@@ -1472,14 +1472,11 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 
 	sendWS(map[string]interface{}{"type": "sub_agent_intent", "intent": "編譯插件..."})
 
-	// esbuild 打包
+	// esbuild 打包（通用 external：所有 bare import 都 external，前端 require shim 解析）
 	entryPath := filepath.Join(workDir, "plugins", pluginDir, "main.tsx")
 	bundlePath := filepath.Join(workDir, "plugins", pluginDir, "bundle.js")
-	esbuildCmd := exec.CommandContext(ctx, "esbuild", entryPath, "--bundle", "--format=iife",
-		"--global-name=__plugin__", "--jsx=automatic", "--loader:.tsx=tsx", "--loader:.ts=ts",
-		"--loader:.css=css",
-		"--external:react", "--external:react-dom", "--external:zustand", "--external:i18next",
-		"--outfile="+bundlePath)
+	esbuildCmd := exec.CommandContext(ctx, "node", "/app/config/esbuild-plugin-bundle.mjs",
+		entryPath, bundlePath)
 	esbuildOut, esbuildErr := esbuildCmd.CombinedOutput()
 	if esbuildErr != nil {
 		errMsg := fmt.Sprintf("esbuild 編譯失敗: %s", string(esbuildOut))
