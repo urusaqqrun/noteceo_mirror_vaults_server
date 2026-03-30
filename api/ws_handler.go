@@ -127,17 +127,23 @@ func (h *WsHandler) HandleForgeAPI(w http.ResponseWriter, r *http.Request) {
 
 	// 找到對應的 WebSocket session 以發送意圖事件
 	var session *WsSession
+	sessionCount := 0
 	h.sessions.Range(func(key, value interface{}) bool {
-		if s, ok := value.(*WsSession); ok && s.memberID == req.MemberID {
-			session = s
-			return false // stop
+		sessionCount++
+		if s, ok := value.(*WsSession); ok {
+			log.Printf("[ForgeAPI] checking session key=%v memberID=%s", key, s.memberID)
+			if s.memberID == req.MemberID {
+				session = s
+				return false
+			}
 		}
 		return true
 	})
 
 	if session == nil {
-		log.Printf("[ForgeAPI] no active WebSocket session for member %s", req.MemberID)
-		// 沒有 WS session 也能跑，只是沒有意圖流
+		log.Printf("[ForgeAPI] no active WebSocket session for member %s (checked %d sessions)", req.MemberID, sessionCount)
+	} else {
+		log.Printf("[ForgeAPI] found WebSocket session for member %s", req.MemberID)
 	}
 
 	// 執行插件鍛造（同步，阻塞到完成）
@@ -1321,7 +1327,20 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	}
 
 	instructions := strings.ReplaceAll(string(pluginTemplate), "{VAULT_SHARED}", sharedDir)
-	fullPrompt := fmt.Sprintf("%s\n\n---\n\n用戶需求：%s", instructions, userPrompt)
+
+	// 預先推導 pluginDir 名稱給 Sub-Agent
+	suggestedDir := strings.ToLower(strings.ReplaceAll(forgeTitle, " ", "-"))
+	cleanDir := ""
+	for _, c := range suggestedDir {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			cleanDir += string(c)
+		}
+	}
+	if cleanDir == "" {
+		cleanDir = "plugin"
+	}
+
+	fullPrompt := fmt.Sprintf("%s\n\n---\n\n插件目錄名稱：plugins/%s/\n用戶需求：%s", instructions, cleanDir, userPrompt)
 	workDir := filepath.Join(vaultRoot, memberID)
 
 	sendWS(map[string]interface{}{"type": "sub_agent_intent", "intent": "啟動插件鍛造環境..."})
@@ -1429,18 +1448,8 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		return map[string]interface{}{"status": "error", "error": waitErr.Error()}
 	}
 
-	// 推導 pluginDir
-	pluginDir := strings.ToLower(strings.ReplaceAll(forgeTitle, " ", "-"))
-	cleanDir := ""
-	for _, c := range pluginDir {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
-			cleanDir += string(c)
-		}
-	}
-	if cleanDir == "" {
-		cleanDir = "plugin"
-	}
-	pluginDir = cleanDir
+	// 使用先前推導的 pluginDir
+	pluginDir := cleanDir
 
 	// 找到實際的 plugin 目錄
 	mainTsxPath := filepath.Join(memberID, "plugins", pluginDir, "main.tsx")

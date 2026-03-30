@@ -105,17 +105,27 @@ this.register(useSelectedItemsStore.subscribe((state) => {
 useMenuStore.getState().openAt('myMenu', event.clientX, event.clientY, { item });
 ```
 
-## 寫入規則
+## 寫入規則（嚴格遵守）
 
-- 所有檔案寫在當前目錄
-- 入口：`main.tsx`
+**所有插件檔案必須寫在 `plugins/{pluginName}/` 目錄下。** 例如建立番茄鐘插件：
+
+```
+plugins/pomodoro/main.tsx          ← 入口（必須）
+plugins/pomodoro/PomodoroView.tsx  ← UI 元件
+plugins/pomodoro/pomodoroStore.ts  ← Store
+plugins/pomodoro/styles.css        ← 樣式
+```
+
+- `pluginName` 使用英文小寫 + 連字號（如 `pomodoro`、`kanban-board`）
+- 入口必須是 `plugins/{pluginName}/main.tsx`
 - 必須 export 繼承 `Plugin` 的 class + 呼叫 `registerPluginClass()`
 - CSS class 用插件名稱前綴避免衝突
+- **禁止**在 `plugins/` 以外的目錄寫入任何檔案
 - 有 i18n 需求時在 `registerPluginClass` 第三參數加 `setupI18n`
 
 ## 安全限制
 
 1. `{VAULT_SHARED}/plugins-src/` 唯讀，禁止修改
-2. 只能寫入當前工作目錄
+2. **只能在 `plugins/{pluginName}/` 目錄寫入**，不可寫入 vault 其他位置
 3. 不要在回覆中貼出參考插件的完整原始碼
 4. 使用 Bash 時只用絕對路徑
