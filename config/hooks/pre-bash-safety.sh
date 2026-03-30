@@ -83,12 +83,14 @@ elif echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])(python3?|node|rub
   BASH_ACTION="write"
 fi
 
-# 規則 3：Bash 只能存取當前工作目錄或 shared（shared 僅允許讀取）
+# 規則 3：Bash 只能存取當前工作目錄（plugin scope 額外允許唯讀 shared）
 while IFS= read -r raw_path; do
   [ -z "$raw_path" ] && continue
 
   CANONICAL_PATH=$(canonicalize_path "$CWD" "$raw_path")
-  if path_within_root "$CANONICAL_PATH" "$SHARED_ROOT"; then
+
+  # plugin scope：允許唯讀存取 shared 目錄
+  if [ "$TASK_SCOPE" = "plugin" ] && path_within_root "$CANONICAL_PATH" "$SHARED_ROOT"; then
     if [ "$IS_WRITE_COMMAND" = "true" ]; then
       deny_pretooluse "${SHARED_ROOT}/ 是唯讀目錄，禁止寫入"
     fi
