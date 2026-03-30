@@ -1168,7 +1168,11 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 
 	sendWS := func(msg map[string]interface{}) {
 		if session != nil {
-			session.Send(msg)
+			if err := session.Send(msg); err != nil {
+				log.Printf("[PluginForge] WS send error: %v (type=%v)", err, msg["type"])
+			} else {
+				log.Printf("[PluginForge] WS sent: type=%v", msg["type"])
+			}
 		}
 	}
 
