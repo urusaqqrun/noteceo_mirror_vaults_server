@@ -240,25 +240,21 @@ func chatWriteError(w http.ResponseWriter, status int, msg string) {
 
 // formatMessages converts []ChatMessage into the frontend-expected format.
 // 只回傳 user-visible 的欄位，不回傳 thinking、tool_calls 等內部資料。
-// tool 訊息中包含 noteID 的轉換為 note_embed 格式，其餘 tool 訊息不回傳。
+// tool 訊息不回傳（內部資料）。
+// artifacts 訊息直接傳遞（包含 action/itemType/id/title 清單）。
 func formatMessages(rows []database.ChatMessage) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(rows))
 	for _, row := range rows {
 		if row.Role == "tool" {
-			var toolData map[string]interface{}
-			if json.Unmarshal([]byte(row.Content), &toolData) == nil {
-				if noteID, ok := toolData["noteID"].(string); ok && noteID != "" {
-					matchedFolders := toolData["matchedFolderNames"]
-					matchedJSON, _ := json.Marshal(matchedFolders)
-					if matchedJSON == nil {
-						matchedJSON = []byte("[]")
-					}
-					content := `<note-embed note-id="` + noteID + `"></note-embed><note-folder-selector note-id="` + noteID + `" matched-folders='` + string(matchedJSON) + `'></note-folder-selector>`
-					result = append(result, map[string]interface{}{
-						"role":    "note_embed",
-						"content": content,
-					})
-				}
+			continue
+		}
+		if row.Role == "artifacts" {
+			var artifacts []map[string]interface{}
+			if json.Unmarshal([]byte(row.Content), &artifacts) == nil && len(artifacts) > 0 {
+				result = append(result, map[string]interface{}{
+					"role":      "artifacts",
+					"artifacts": artifacts,
+				})
 			}
 			continue
 		}
