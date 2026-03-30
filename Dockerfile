@@ -41,9 +41,6 @@ COPY --from=builder /app/vault-mirror-service /app/vault-mirror-service
 COPY ./config/ /app/config/
 COPY ./entrypoint.sh /app/
 
-# 內建插件原始碼（deploy.sh 從 cubelv_electron 複製到此目錄）
-COPY ./builtin-plugins-src/ /app/builtin-plugins-src/
-
 # Claude CLI hooks 設定 + 讓所有 UID 都能讀取 CLI 設定與執行 CLI
 RUN mkdir -p /home/mirror/.claude && \
     cp /app/config/claude-hooks-settings.json /home/mirror/.claude/settings.json && \

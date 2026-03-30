@@ -26,13 +26,19 @@ mkdir -p "$VAULT_ROOT/shared"
 chown root:root "$VAULT_ROOT/shared"
 chmod 755 "$VAULT_ROOT/shared"
 
-# 同步內建插件原始碼到 EFS shared 目錄
-if [ -d "/app/builtin-plugins-src" ]; then
-  echo "同步內建插件原始碼到 $VAULT_ROOT/shared/plugins-src/ ..."
-  mkdir -p "$VAULT_ROOT/shared/plugins-src"
-  cp -r /app/builtin-plugins-src/* "$VAULT_ROOT/shared/plugins-src/"
-  chmod -R a+rX "$VAULT_ROOT/shared/plugins-src"
+# 從 S3 (via CloudFront) 下載內建插件原始碼到 EFS shared 目錄
+PLUGINS_SRC_URL="${PLUGINS_SRC_URL:-https://cubelv.com/app/plugins-src.tar.gz}"
+PLUGINS_DST="$VAULT_ROOT/shared/plugins-src"
+echo "下載內建插件原始碼: $PLUGINS_SRC_URL ..."
+if curl -fsSL "$PLUGINS_SRC_URL" -o /tmp/plugins-src.tar.gz; then
+  rm -rf "$PLUGINS_DST"
+  mkdir -p "$PLUGINS_DST"
+  tar -xzf /tmp/plugins-src.tar.gz -C "$PLUGINS_DST"
+  chmod -R a+rX "$PLUGINS_DST"
+  rm -f /tmp/plugins-src.tar.gz
   echo "✅ 內建插件原始碼同步完成"
+else
+  echo "⚠️ 下載插件原始碼失敗，跳過（$PLUGINS_SRC_URL）"
 fi
 
 # 打印環境配置（不包含敏感數據）

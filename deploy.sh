@@ -7,33 +7,6 @@ cd "$SCRIPT_DIR"
 echo "📁 工作目錄: $SCRIPT_DIR"
 
 # ----------------------------------------
-# 同步內建插件原始碼（從 cubelv_electron 複製）
-# ----------------------------------------
-ELECTRON_SRC="$SCRIPT_DIR/../../cubelv_electron/renderer/src"
-STAGING_DIR="$SCRIPT_DIR/builtin-plugins-src"
-
-if [ -d "$ELECTRON_SRC/components/plugins" ]; then
-  echo "=== 同步內建插件原始碼 ==="
-  rm -rf "$STAGING_DIR"
-  mkdir -p "$STAGING_DIR/plugins" "$STAGING_DIR/workspace" "$STAGING_DIR/types"
-
-  cp -r "$ELECTRON_SRC/components/plugins/"* "$STAGING_DIR/plugins/"
-  cp "$ELECTRON_SRC/workspace/Plugin.ts" \
-     "$ELECTRON_SRC/workspace/PluginManager.ts" \
-     "$ELECTRON_SRC/workspace/pluginRegistry.ts" \
-     "$ELECTRON_SRC/workspace/pluginLoader.ts" \
-     "$ELECTRON_SRC/workspace/pluginSDK.ts" \
-     "$STAGING_DIR/workspace/"
-  cp "$ELECTRON_SRC/types/item.ts" "$STAGING_DIR/types/"
-
-  echo "✅ 內建插件原始碼已複製到 $STAGING_DIR"
-else
-  echo "⚠️ 找不到 cubelv_electron 插件目錄: $ELECTRON_SRC/components/plugins"
-  echo "   跳過內建插件同步（builtin-plugins-src/ 將使用現有內容或為空）"
-  mkdir -p "$STAGING_DIR"
-fi
-
-# ----------------------------------------
 # 部署腳本配置
 # ----------------------------------------
 AWS_REGION="ap-northeast-1"
@@ -248,7 +221,6 @@ fi
 
 # 清理
 rm -f mirror-service-task-definition-updated.json
-rm -rf "$SCRIPT_DIR/builtin-plugins-src"
 
 echo "=== 部署完成 ==="
 echo "您可以使用以下命令查看："
