@@ -4,6 +4,11 @@
       "command": "node",
       "args": ["/app/config/mcp_serper_server.mjs"],
       "timeout": 30
+    },
+    "plugin-forge": {
+      "command": "node",
+      "args": ["/app/config/mcp_plugin_forge.mjs"],
+      "timeout": 600
     }
   },
   "hooks": {
