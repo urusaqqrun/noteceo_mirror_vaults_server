@@ -239,31 +239,24 @@ func chatWriteError(w http.ResponseWriter, status int, msg string) {
 }
 
 // formatMessages converts []ChatMessage into the frontend-expected format.
-// 只回傳 user-visible 的欄位，不回傳 thinking、tool_calls 等內部資料。
-// tool 訊息不回傳（內部資料）。
-// artifacts 訊息直接傳遞（包含 action/itemType/id/title 清單）。
 func formatMessages(rows []database.ChatMessage) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(rows))
 	for _, row := range rows {
-		if row.Role == "tool" {
-			continue
-		}
-		if row.Role == "artifacts" {
-			var artifacts []map[string]interface{}
-			if json.Unmarshal([]byte(row.Content), &artifacts) == nil && len(artifacts) > 0 {
-				result = append(result, map[string]interface{}{
-					"role":      "artifacts",
-					"artifacts": artifacts,
-				})
-			}
-			continue
-		}
 		msg := map[string]interface{}{
 			"role":    row.Role,
 			"content": row.Content,
 		}
 		if row.Role == "assistant" {
 			msg["checkpoint_id"] = row.ID
+			if row.Thinking != "" {
+				msg["thinking"] = row.Thinking
+			}
+			if len(row.ToolCalls) > 0 {
+				msg["tool_calls"] = row.ToolCalls
+			}
+		}
+		if row.Role == "tool" && row.ToolCallID != "" {
+			msg["tool_call_id"] = row.ToolCallID
 		}
 		if len(row.AttachedItems) > 0 {
 			msg["attachedItems"] = row.AttachedItems

@@ -413,47 +413,13 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// toolNameToPhase 將 tool 名稱映射為高層級階段（前端根據 phase 決定顯示文案）
-func toolNameToPhase(toolName string, input map[string]interface{}) string {
-	action, _ := input["action"].(string)
-	actionLower := strings.ToLower(action)
-
-	switch toolName {
-	case "think_purpose":
-		return "thinking"
-	case "Read", "Grep", "Glob", "get_tree", "get_folders", "get_notes",
-		"get_card_type", "get_card", "get_chart_type", "get_chart", "TodoRead":
-		return "reading"
-	case "web_search", "fetch", "search_mergeable_note_in_folder":
-		return "searching"
-	case "Write", "create_note", "create_card_type", "create_chart_type", "create_todo":
-		return "creating"
-	case "Edit", "MultiEdit", "merge_notes", "edit_todo", "TodoWrite":
-		return "editing"
-	case "edit_note", "edit_folder", "edit_folder_tree", "edit_task", "report_task",
-		"edit_card", "edit_card_group", "edit_chart", "edit_chart_type", "edit_card_type":
-		switch actionLower {
-		case "create", "create_group":
-			return "creating"
-		case "delete", "delete_group":
-			return "deleting"
-		default:
-			return "editing"
-		}
-	case "Bash":
-		return "working"
-	default:
-		return "working"
-	}
-}
-
 func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map[string]interface{}) {
 	handleStart := time.Now()
 	log.Printf("[CacheProfile] handleMessage START — member=%s session=%s", session.memberID, session.sessionID)
 
 	if err := h.checkCredits(session.memberID); err != nil {
 		session.Send(map[string]interface{}{
-			"type":     "turn_error",
+			"type":     "stream_error",
 			"memberID": session.memberID,
 			"error":    err.Error(),
 		})
@@ -515,19 +481,17 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	log.Printf("[CacheProfile] ensureCLI DONE — %dms", time.Since(ensureStart).Milliseconds())
 	if cli == nil {
 		session.Send(map[string]interface{}{
-			"type":     "turn_error",
+			"type":     "stream_error",
 			"memberID": session.memberID,
 			"error":    "failed to start CLI process",
 		})
 		return
 	}
 
-	// 3. turn_start（生成 turn_id 供前端群組所有事件）
-	turnID := fmt.Sprintf("%s-%d", session.sessionID, time.Now().UnixNano())
+	// 3. stream_start
 	session.Send(map[string]interface{}{
-		"type":     "turn_start",
+		"type":     "stream_start",
 		"memberID": session.memberID,
-		"turn_id":  turnID,
 	})
 
 	isCacheBuilding := !cli.CacheBuilt
@@ -572,7 +536,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	log.Printf("[CacheProfile] sendMessage DONE — %dms", time.Since(sendStart).Milliseconds())
 	if err != nil {
 		session.Send(map[string]interface{}{
-			"type":     "turn_error",
+			"type":     "stream_error",
 			"memberID": session.memberID,
 			"error":    fmt.Sprintf("CLI send error: %v", err),
 		})
@@ -585,7 +549,6 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	sentToolUseIDs := map[string]bool{}
 	var accumulatedToolCalls []map[string]interface{}
 	var tokenUsage json.RawMessage
-	currentPhase := ""
 
 	cliReadySent := false
 	firstStdoutReceived := false
@@ -608,7 +571,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			})
 		}
 
-		log.Printf("[WS-CLI] raw line: len=%d", len(event.Data))
+		log.Printf("[WS-CLI] raw line: %s", event.Data[:min(len(event.Data), 2000)])
 
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(event.Data), &parsed); err != nil {
@@ -628,7 +591,8 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			innerType, _ := inner["type"].(string)
 
 			if innerType == "message_start" {
-				// 不重設 accumulatedText/Thinking，多 turn 內容持續累加
+				accumulatedText = ""
+				accumulatedThinking = ""
 			}
 
 			if innerType == "content_block_delta" {
@@ -638,29 +602,28 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				}
 				deltaType, _ := delta["type"].(string)
 				switch deltaType {
-			case "text_delta":
-				text, _ := delta["text"].(string)
-				if text != "" {
-					accumulatedText += text
-					session.Send(map[string]interface{}{
-						"type":        "assistant_chunk",
-						"memberID":    session.memberID,
-						"token":       text,
-						"accumulated": accumulatedText,
-					})
-				}
-		case "thinking_delta":
-			text, _ := delta["thinking"].(string)
-			if text != "" {
-				accumulatedThinking += text
-				if currentPhase != "thinking" {
-					currentPhase = "thinking"
-					session.Send(map[string]interface{}{
-						"type":  "phase_update",
-						"phase": "thinking",
-					})
-				}
-			}
+				case "text_delta":
+					text, _ := delta["text"].(string)
+					if text != "" {
+						accumulatedText += text
+						session.Send(map[string]interface{}{
+							"type":        "stream_token",
+							"memberID":    session.memberID,
+							"token":       text,
+							"accumulated": accumulatedText,
+						})
+					}
+					case "thinking_delta":
+					text, _ := delta["thinking"].(string)
+					if text != "" {
+						accumulatedThinking += text
+						session.Send(map[string]interface{}{
+							"type":        "thinking_token",
+							"memberID":    session.memberID,
+							"token":       text,
+							"accumulated": accumulatedThinking,
+						})
+					}
 				}
 			}
 
@@ -676,95 +639,102 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 						switch blockType {
 						case "text":
 							text, _ := blockMap["text"].(string)
-							if text != "" && len(text) > len(accumulatedText) {
+							if text != "" && text != accumulatedText {
 								accumulatedText = text
 								session.Send(map[string]interface{}{
-									"type":        "assistant_chunk",
+									"type":        "stream_token",
 									"memberID":    session.memberID,
 									"token":       text,
 									"accumulated": accumulatedText,
 								})
 							}
-						case "thinking":
+							case "thinking":
 							text, _ := blockMap["thinking"].(string)
 							if text != "" && text != accumulatedThinking {
 								accumulatedThinking = text
-								if currentPhase != "thinking" {
-									currentPhase = "thinking"
-									session.Send(map[string]interface{}{
-										"type":  "phase_update",
-										"phase": "thinking",
-									})
-								}
-							}
-						case "tool_use":
-							toolID, _ := blockMap["id"].(string)
-							if toolID != "" && sentToolUseIDs[toolID] {
-								continue
-							}
-							sentToolUseIDs[toolID] = true
-							inputJSON, _ := json.Marshal(blockMap["input"])
-							tc := map[string]interface{}{
-								"id":   toolID,
-								"type": "function",
-								"function": map[string]interface{}{
-									"name":      blockMap["name"],
-									"arguments": string(inputJSON),
-								},
-							}
-							accumulatedToolCalls = append(accumulatedToolCalls, tc)
-							toolName, _ := blockMap["name"].(string)
-							toolInput, _ := blockMap["input"].(map[string]interface{})
-							phase := toolNameToPhase(toolName, toolInput)
-							if phase != currentPhase {
-								currentPhase = phase
 								session.Send(map[string]interface{}{
-									"type":  "phase_update",
-									"phase": phase,
+									"type":        "thinking_token",
+									"memberID":    session.memberID,
+									"token":       text,
+									"accumulated": accumulatedThinking,
+								})
+							}
+				case "tool_use":
+				toolID, _ := blockMap["id"].(string)
+				if toolID != "" && sentToolUseIDs[toolID] {
+					continue
+				}
+				sentToolUseIDs[toolID] = true
+				inputJSON, _ := json.Marshal(blockMap["input"])
+				tc := map[string]interface{}{
+					"id":   toolID,
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      blockMap["name"],
+						"arguments": string(inputJSON),
+					},
+				}
+					accumulatedToolCalls = append(accumulatedToolCalls, tc)
+					session.Send(map[string]interface{}{
+						"type":       "message",
+						"role":       "assistant",
+						"content":    "",
+						"tool_calls": []map[string]interface{}{tc},
+					})
+						}
+					}
+				}
+			}
+
+		case eventType == "result" && subtype == "tool_result":
+			toolCallID, _ := parsed["tool_use_id"].(string)
+			toolContent, _ := parsed["content"].(string)
+			session.Send(map[string]interface{}{
+				"type":         "message",
+				"role":         "tool",
+				"content":      toolContent,
+				"tool_call_id": toolCallID,
+			})
+			if !noSave {
+				h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+					SessionID:  session.sessionID,
+					Mode:       session.mode,
+					Role:       "tool",
+					Content:    toolContent,
+					ToolCallID: toolCallID,
+				})
+			}
+
+		case eventType == "user":
+			if msgContent, ok := parsed["message"].(map[string]interface{}); ok {
+				if contentArr, ok := msgContent["content"].([]interface{}); ok {
+					for _, block := range contentArr {
+						blockMap, ok := block.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if blockMap["type"] == "tool_result" {
+							tcID, _ := blockMap["tool_use_id"].(string)
+							tcContent, _ := blockMap["content"].(string)
+							session.Send(map[string]interface{}{
+								"type":         "message",
+								"role":         "tool",
+								"content":      tcContent,
+								"tool_call_id": tcID,
+							})
+							if !noSave {
+								h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+									SessionID:  session.sessionID,
+									Mode:       session.mode,
+									Role:       "tool",
+									Content:    tcContent,
+									ToolCallID: tcID,
 								})
 							}
 						}
 					}
 				}
 			}
-
-	case eventType == "result" && subtype == "tool_result":
-		toolCallID, _ := parsed["tool_use_id"].(string)
-		toolContent, _ := parsed["content"].(string)
-		if !noSave {
-			h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
-				SessionID:  session.sessionID,
-				Mode:       session.mode,
-				Role:       "tool",
-				Content:    toolContent,
-				ToolCallID: toolCallID,
-			})
-		}
-
-	case eventType == "user":
-		if msgContent, ok := parsed["message"].(map[string]interface{}); ok {
-			if contentArr, ok := msgContent["content"].([]interface{}); ok {
-				for _, block := range contentArr {
-					blockMap, ok := block.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					if blockMap["type"] == "tool_result" {
-						tcID, _ := blockMap["tool_use_id"].(string)
-						tcContent, _ := blockMap["content"].(string)
-						if !noSave {
-							h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
-								SessionID:  session.sessionID,
-								Mode:       session.mode,
-								Role:       "tool",
-								Content:    tcContent,
-								ToolCallID: tcID,
-							})
-						}
-					}
-				}
-			}
-		}
 
 		case eventType == "result" && subtype == "error_during_execution":
 			errMsgs, _ := parsed["errors"].([]interface{})
@@ -776,7 +746,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			}
 			log.Printf("[WS-CLI] error_during_execution: %s", errStr)
 			session.Send(map[string]interface{}{
-				"type":     "turn_error",
+				"type":     "stream_error",
 				"memberID": session.memberID,
 				"error":    errStr,
 			})
@@ -785,7 +755,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			if resultText, ok := parsed["result"].(string); ok && resultText != "" && accumulatedText == "" {
 				accumulatedText = resultText
 				session.Send(map[string]interface{}{
-					"type":        "assistant_chunk",
+					"type":        "stream_token",
 					"memberID":    session.memberID,
 					"token":       resultText,
 					"accumulated": accumulatedText,
@@ -819,7 +789,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				}
 				session.mu.Unlock()
 				session.Send(map[string]interface{}{
-					"type":     "turn_error",
+					"type":     "stream_error",
 					"memberID": session.memberID,
 					"error":    err.Error(),
 				})
@@ -849,11 +819,10 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		assistantMsgID = assistantMsg.ID
 	}
 
-	// 8. turn_end
+	// 8. stream_end
 	session.Send(map[string]interface{}{
-		"type":           "turn_end",
+		"type":           "stream_end",
 		"memberID":       session.memberID,
-		"turn_id":        turnID,
 		"final_response": accumulatedText,
 		"checkpoint_id":  assistantMsgID,
 		"token_usage":    tokenUsage,
@@ -894,55 +863,21 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 						)
 						if importErr != nil {
 							log.Printf("[WS] importer.ProcessDiff error: %v", importErr)
-					} else if len(entries) > 0 {
-						wbResult := executor.WriteBack(
-							context.Background(), h.itemWriter,
-							session.memberID, entries,
-						)
-						log.Printf("[WS] WriteBack: +%d ~%d mv%d -%d err%d",
-							wbResult.Created, wbResult.Updated, wbResult.Moved,
-							wbResult.Deleted, wbResult.Errors)
-
-						// 從 ProcessDiff 結果建立 artifact 清單
-						var artifacts []map[string]interface{}
-						for _, entry := range entries {
-							if entry.Action == mirror.ImportActionSkip {
-								continue
-							}
-							art := map[string]interface{}{
-								"action":   string(entry.Action),
-								"itemType": entry.ItemType,
-								"id":       entry.DocID,
-							}
-							if entry.ItemData != nil && entry.ItemData.Name != "" {
-								art["title"] = entry.ItemData.Name
-							}
-							artifacts = append(artifacts, art)
+						} else if len(entries) > 0 {
+							wbResult := executor.WriteBack(
+								context.Background(), h.itemWriter,
+								session.memberID, entries,
+							)
+							log.Printf("[WS] WriteBack: +%d ~%d mv%d -%d err%d",
+								wbResult.Created, wbResult.Updated, wbResult.Moved,
+								wbResult.Deleted, wbResult.Errors)
 						}
-						if len(artifacts) > 0 {
-							session.Send(map[string]interface{}{
-								"type":      "artifact_upsert",
-								"turn_id":   turnID,
-								"artifacts": artifacts,
-							})
-							// 持久化 artifacts 供歷史重載
-							if !noSave {
-								artJSON, _ := json.Marshal(artifacts)
-								h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
-									SessionID: session.sessionID,
-									Mode:      session.mode,
-									Role:      "artifacts",
-									Content:   string(artJSON),
-								})
-							}
-						}
-					}
 
-					h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)
-					session.Send(map[string]interface{}{
-						"type":     "vault_changed",
-						"memberID": session.memberID,
-					})
+						h.updateDBSnapshot(session.memberID, afterSnap, afterIDMap, diff)
+						session.Send(map[string]interface{}{
+							"type":     "vault_changed",
+							"memberID": session.memberID,
+						})
 					}
 					h.snapCache.Store(session.memberID, &cachedSnapshot{snap: afterSnap, idMap: afterIDMap})
 				}
@@ -1214,7 +1149,7 @@ func (h *WsHandler) handleInterrupt(session *WsSession) {
 	}
 
 	session.Send(map[string]interface{}{
-		"type":     "turn_interrupted",
+		"type":     "stream_interrupted",
 		"memberID": session.memberID,
 		"message":  "已中斷",
 	})
