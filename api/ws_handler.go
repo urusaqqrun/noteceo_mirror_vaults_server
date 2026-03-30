@@ -1,13 +1,16 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -497,6 +500,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	sentToolUseIDs := map[string]bool{}
 	var accumulatedToolCalls []map[string]interface{}
 	var tokenUsage json.RawMessage
+	var forgeTitle string // 非空 = 偵測到 <<<FORGE:xxx>>> 標記
 
 	cliReadySent := false
 	firstStdoutReceived := false
@@ -745,6 +749,19 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 	}
 
+	// 6.5 偵測 <<<FORGE:xxx>>> 標記
+	if idx := strings.Index(accumulatedText, "<<<FORGE:"); idx >= 0 {
+		end := strings.Index(accumulatedText[idx:], ">>>")
+		if end > 0 {
+			forgeTitle = accumulatedText[idx+len("<<<FORGE:") : idx+end]
+			// 從 accumulatedText 中移除標記行
+			marker := accumulatedText[idx : idx+end+len(">>>")]
+			accumulatedText = strings.Replace(accumulatedText, marker, "", 1)
+			accumulatedText = strings.TrimSpace(accumulatedText)
+			log.Printf("[PluginForge] detected forge marker: title=%q, member=%s", forgeTitle, session.memberID)
+		}
+	}
+
 	// 7. Save assistant message
 	var assistantMsgID interface{}
 	if !noSave {
@@ -773,6 +790,11 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		"checkpoint_id":  assistantMsgID,
 		"token_usage":    tokenUsage,
 	})
+
+	// 8.5 Plugin Forge：啟動 Sub-Agent
+	if forgeTitle != "" {
+		go h.handlePluginForge(session, sessionKey, forgeTitle, messageText)
+	}
 
 	log.Printf("[CacheProfile] handleMessage DONE — total=%dms, member=%s",
 		time.Since(handleStart).Milliseconds(), session.memberID)
@@ -1099,6 +1121,309 @@ func (h *WsHandler) handleInterrupt(session *WsSession) {
 		"memberID": session.memberID,
 		"message":  "已中斷",
 	})
+}
+
+// handlePluginForge 啟動插件鍛造 Sub-Agent
+// Main Agent 偵測到 <<<FORGE:title>>> 後呼叫此函數
+func (h *WsHandler) handlePluginForge(session *WsSession, sessionKey, forgeTitle, userPrompt string) {
+	log.Printf("[PluginForge] starting sub-agent: title=%q member=%s", forgeTitle, session.memberID)
+
+	// 1. sub_agent_start
+	session.Send(map[string]interface{}{
+		"type":  "sub_agent_start",
+		"title": forgeTitle,
+	})
+
+	// 2. 讀取 CLAUDE-plugin.md 模板作為 system prompt prefix
+	vaultRoot := os.Getenv("VAULT_ROOT")
+	if vaultRoot == "" {
+		vaultRoot = "/vaults"
+	}
+	sharedDir := filepath.Join(vaultRoot, "shared")
+
+	pluginTemplatePath := "/app/config/CLAUDE-plugin.md.template"
+	pluginTemplate, err := os.ReadFile(pluginTemplatePath)
+	if err != nil {
+		log.Printf("[PluginForge] failed to read plugin template: %v", err)
+		session.Send(map[string]interface{}{
+			"type":   "sub_agent_complete",
+			"status": "error",
+			"error":  "插件鍛造系統啟動失敗",
+		})
+		return
+	}
+
+	// 替換 {VAULT_SHARED} placeholder
+	instructions := strings.ReplaceAll(string(pluginTemplate), "{VAULT_SHARED}", sharedDir)
+
+	// 3. 組合 Sub-Agent 的初始指令
+	fullPrompt := fmt.Sprintf("%s\n\n---\n\n用戶需求：%s", instructions, userPrompt)
+
+	// 4. 啟動 Sub-Agent CLI（使用 ExecuteTaskStream 或直接用 one-shot 模式）
+	workDir := filepath.Join(vaultRoot, session.memberID)
+
+	session.Send(map[string]interface{}{
+		"type":   "sub_agent_intent",
+		"intent": "啟動插件鍛造環境...",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	args := []string{
+		"--print",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+		"--mcp-config", "/home/mirror/.claude/settings.json",
+		"-p", fullPrompt,
+	}
+
+	cmd := executor.NewClaudeCmdExported(ctx, workDir, "plugin", session.memberID, args)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("[PluginForge] stdout pipe error: %v", err)
+		session.Send(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": err.Error()})
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		log.Printf("[PluginForge] stderr pipe error: %v", err)
+		session.Send(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": err.Error()})
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("[PluginForge] start error: %v", err)
+		session.Send(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": err.Error()})
+		return
+	}
+
+	// 背景讀取 stderr
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		scanner.Buffer(make([]byte, 64*1024), 64*1024)
+		for scanner.Scan() {
+			log.Printf("[PluginForge-stderr] %s", scanner.Text())
+		}
+	}()
+
+	// 5. 讀取 Sub-Agent 事件，過濾後發送意圖流
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	lastIntent := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+			continue
+		}
+
+		eventType, _ := parsed["type"].(string)
+
+		// 從 tool_use 事件提取意圖描述
+		if eventType == "assistant" {
+			if msgContent, ok := parsed["message"].(map[string]interface{}); ok {
+				if contentArr, ok := msgContent["content"].([]interface{}); ok {
+					for _, block := range contentArr {
+						blockMap, ok := block.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if blockMap["type"] == "tool_use" {
+							toolName, _ := blockMap["name"].(string)
+							input, _ := blockMap["input"].(map[string]interface{})
+
+							var intent string
+							switch toolName {
+							case "Read":
+								fp, _ := input["file_path"].(string)
+								intent = "讀取 " + filepath.Base(fp)
+							case "Write":
+								fp, _ := input["file_path"].(string)
+								intent = "建立 " + filepath.Base(fp)
+							case "Edit":
+								fp, _ := input["file_path"].(string)
+								intent = "修改 " + filepath.Base(fp)
+							case "Bash":
+								desc, _ := input["description"].(string)
+								if desc != "" {
+									intent = desc
+								} else {
+									cmd, _ := input["command"].(string)
+									if len(cmd) > 50 {
+										cmd = cmd[:50] + "..."
+									}
+									intent = "執行: " + cmd
+								}
+							case "Glob":
+								intent = "搜尋檔案..."
+							case "Grep":
+								intent = "搜尋程式碼..."
+							default:
+								intent = toolName
+							}
+
+							if intent != "" && intent != lastIntent {
+								lastIntent = intent
+								session.Send(map[string]interface{}{
+									"type":   "sub_agent_intent",
+									"intent": intent,
+								})
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 6. 等待 Sub-Agent 完成
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		log.Printf("[PluginForge] sub-agent exited with error: %v", waitErr)
+		session.Send(map[string]interface{}{
+			"type":   "sub_agent_complete",
+			"status": "error",
+			"error":  waitErr.Error(),
+		})
+		return
+	}
+
+	// 7. 從 forgeTitle 推導 pluginDir（取英文小寫，空格替換為 -）
+	pluginDir := strings.ToLower(strings.ReplaceAll(forgeTitle, " ", "-"))
+	// 移除非字母數字字元
+	cleanDir := ""
+	for _, c := range pluginDir {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			cleanDir += string(c)
+		}
+	}
+	if cleanDir == "" {
+		cleanDir = "plugin"
+	}
+	pluginDir = cleanDir
+
+	// 檢查 main.tsx 是否存在
+	mainTsxPath := filepath.Join(session.memberID, "plugins", pluginDir, "main.tsx")
+	if !h.vaultFS.Exists(mainTsxPath) {
+		// 嘗試掃描 plugins/ 下找到實際的目錄
+		pluginsPath := filepath.Join(session.memberID, "plugins")
+		entries, _ := h.vaultFS.ListDir(pluginsPath)
+		for _, e := range entries {
+			if e.IsDir() {
+				testPath := filepath.Join(session.memberID, "plugins", e.Name(), "main.tsx")
+				if h.vaultFS.Exists(testPath) {
+					pluginDir = e.Name()
+					break
+				}
+			}
+		}
+	}
+
+	session.Send(map[string]interface{}{
+		"type":   "sub_agent_intent",
+		"intent": "編譯插件...",
+	})
+
+	// 8. esbuild 打包
+	entryPath := filepath.Join(workDir, "plugins", pluginDir, "main.tsx")
+	bundlePath := filepath.Join(workDir, "plugins", pluginDir, "bundle.js")
+
+	esbuildCmd := exec.CommandContext(ctx, "esbuild",
+		entryPath,
+		"--bundle",
+		"--format=iife",
+		"--global-name=__plugin__",
+		"--jsx=automatic",
+		"--loader:.tsx=tsx",
+		"--loader:.ts=ts",
+		"--loader:.css=css",
+		"--outfile="+bundlePath,
+	)
+	esbuildOut, esbuildErr := esbuildCmd.CombinedOutput()
+	if esbuildErr != nil {
+		log.Printf("[PluginForge] esbuild failed: %v\noutput: %s", esbuildErr, string(esbuildOut))
+		session.Send(map[string]interface{}{
+			"type":   "sub_agent_complete",
+			"status": "error",
+			"error":  fmt.Sprintf("esbuild 編譯失敗: %s", string(esbuildOut)),
+		})
+		return
+	}
+	log.Printf("[PluginForge] esbuild success: %s", bundlePath)
+
+	// 9. 計算 bundle hash
+	bundleFullPath := filepath.Join(session.memberID, "plugins", pluginDir, "bundle.js")
+	bundleBytes, err := h.vaultFS.ReadFile(bundleFullPath)
+	bundleHash := ""
+	if err == nil {
+		hashSum := sha256.Sum256(bundleBytes)
+		bundleHash = fmt.Sprintf("%x", hashSum[:8])
+	}
+
+	session.Send(map[string]interface{}{
+		"type":   "sub_agent_intent",
+		"intent": "註冊插件...",
+	})
+
+	// 10. 寫入 PLUGIN item 到 PG
+	pluginID := fmt.Sprintf("%x%012x", time.Now().UnixNano()&0xFFFFFFFF, time.Now().UnixNano()>>32)
+	if len(pluginID) > 24 {
+		pluginID = pluginID[:24]
+	}
+
+	pluginDoc := executor.Doc{
+		"_id":      pluginID,
+		"itemType": "PLUGIN",
+		"name":     forgeTitle,
+		"fields": map[string]interface{}{
+			"pluginDir":   pluginDir,
+			"bundleHash":  bundleHash,
+			"version":     1,
+			"status":      "active",
+			"description": forgeTitle,
+			"createdAt":   time.Now().UnixMilli(),
+			"updatedAt":   time.Now().UnixMilli(),
+		},
+	}
+	if upsertErr := h.itemWriter.UpsertItem(context.Background(), session.memberID, pluginDoc); upsertErr != nil {
+		log.Printf("[PluginForge] failed to write PLUGIN item: %v", upsertErr)
+	} else {
+		log.Printf("[PluginForge] PLUGIN item written: id=%s dir=%s hash=%s", pluginID, pluginDir, bundleHash)
+	}
+
+	// 11. 通知前端
+	session.Send(map[string]interface{}{
+		"type":   "sub_agent_complete",
+		"status": "success",
+		"title":  forgeTitle,
+		"plugin": map[string]interface{}{
+			"id":         pluginID,
+			"pluginDir":  pluginDir,
+			"bundleHash": bundleHash,
+		},
+	})
+
+	// 12. 觸發 vault_changed 讓前端 sync 拿到新 PLUGIN item
+	session.Send(map[string]interface{}{
+		"type": "vault_changed",
+	})
+
+	// 13. 將結果注入 Main Agent 對話
+	session.mu.Lock()
+	mainCLI := session.cli
+	session.mu.Unlock()
+
+	if mainCLI != nil && mainCLI.IsAlive() {
+		resultMsg := fmt.Sprintf("插件鍛造完成：「%s」已建立並編譯成功。插件目錄：plugins/%s，bundleHash：%s。請告知用戶插件已可使用。", forgeTitle, pluginDir, bundleHash)
+		mainCLI.SendMessage(resultMsg)
+	}
 }
 
 func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg string) {

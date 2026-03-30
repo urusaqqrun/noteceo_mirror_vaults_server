@@ -1,0 +1,121 @@
+# CubeLV 插件鍛造
+
+你的任務是建立或修改一個 CubeLV 插件。
+
+## 參考原始碼（唯讀）
+
+`{VAULT_SHARED}/plugins-src/` 包含所有內建插件原始碼和基礎設施。
+
+建立新插件前：
+1. 讀 `{VAULT_SHARED}/plugins-src/workspace/Plugin.ts` 了解基類 API
+2. 讀 `{VAULT_SHARED}/plugins-src/workspace/pluginSDK.ts` 了解 `window.__NC__` 暴露的 runtime API
+3. 讀 1-2 個相近的內建插件（在 `plugins/` 下）作為範例
+
+## 插件結構
+
+入口必須是 `main.tsx`，結構：
+
+```tsx
+const { React } = window.__NC__;
+const { Plugin, registerPluginClass, WorkspaceLeaf, useItemStore } = window.__NC__.sdk;
+
+class MyView extends ReactView {
+    getViewType() { return 'my-view'; }
+    getDisplayText() { return '我的功能'; }
+    renderComponent() { return <MyComponent />; }
+}
+
+export class MyPlugin extends Plugin {
+    onload() {
+        this.registerView('my-view', (leaf) => new MyView(leaf));
+    }
+}
+
+registerPluginClass(MyPlugin, '我的功能');
+```
+
+## Plugin 基類 API
+
+### 註冊方法（卸載時自動清理）
+
+| 方法 | 用途 |
+|------|------|
+| `registerView(type, creator)` | 註冊 View 類型 |
+| `registerOverlay(id, Component)` | 註冊全局浮動元件（dialog / menu） |
+| `registerWindowView(itemType, viewType, opts, onOpen?)` | 宣告 itemType 可開獨立視窗 |
+| `registerEditorExtension(id, ext)` | 註冊 TipTap 編輯器擴展 |
+| `registerSidebarSection(desc)` | 註冊側欄區塊 |
+| `registerSearchProvider(itemType, provider)` | 註冊搜尋 |
+| `registerItemFields(itemType, ext)` | 擴展 itemType schema 欄位 |
+| `registerAIHints(itemType, hints)` | 註冊 AI 操作提示 |
+| `registerAISkill({ name, instruction })` | 註冊 AI 技能指令 |
+| `addCommand(cmd)` | 註冊指令（含快捷鍵） |
+| `registerEvent(event, handler)` | 訂閱 eventBus 事件 |
+| `registerDomEvent(el, type, callback)` | 訂閱 DOM 事件 |
+| `registerInterval(id)` | 註冊 setInterval |
+| `register(cleanup)` | 註冊任意清理函式 |
+
+### Pane 操作
+
+| 方法 | 用途 |
+|------|------|
+| `clearPane(paneId)` | 清空 pane 內所有 leaf |
+| `ensureLeafInPane(paneId, leafId, viewType, sizing)` | 確保 pane 中有指定 leaf（冪等） |
+
+## window.__NC__ SDK
+
+動態插件透過 `window.__NC__` 存取所有依賴：
+
+```
+window.__NC__.React / ReactDOM / zustand / i18next / reactI18next
+window.__NC__.sdk.Plugin / registerPluginClass / registerPluginLocales / WorkspaceLeaf
+window.__NC__.sdk.useItemStore / useSelectedItemsStore / useDialogStore / useMenuStore / useOverlayStore
+window.__NC__.sdk.eventBus / useEditorRefStore
+```
+
+**禁止使用 import 語法引入 React 或其他框架**，一律從 `window.__NC__` 取得。
+
+## 數據存取
+
+- 讀取 item：`useItemStore.getState().getByType(...)` 或 `getById(id)`
+- 寫入 item：`useItemStore.getState().upsertItem({...}, { needSync: true })`
+- 跨插件讀取用 `window.electronAPI.getItem(id)`，不要 import 其他插件的 store
+
+## 常用模式
+
+**自治掛載**（訂閱導航狀態決定顯示）：
+```tsx
+this.register(useSelectedItemsStore.subscribe((state) => {
+    const last = state.path.at(-1);
+    if (last?.itemType === 'MY_FOLDER') {
+        this.ensureLeafInPane('centerPane1', 'leaf-my', 'my-view', { size: 340, minSize: 200 });
+    }
+}));
+```
+
+**Dialog**（透過 dialogStore，不直接 import）：
+```tsx
+// 註冊：this.registerOverlay('myDialog', MyDialog);
+// 開啟：useDialogStore.getState().open('myDialog', { item, onConfirm });
+// Dialog 內用 as MyDialogData | null 讀取 data
+```
+
+**Menu**（透過 menuStore）：
+```tsx
+useMenuStore.getState().openAt('myMenu', event.clientX, event.clientY, { item });
+```
+
+## 寫入規則
+
+- 所有檔案寫在當前目錄
+- 入口：`main.tsx`
+- 必須 export 繼承 `Plugin` 的 class + 呼叫 `registerPluginClass()`
+- CSS class 用插件名稱前綴避免衝突
+- 有 i18n 需求時在 `registerPluginClass` 第三參數加 `setupI18n`
+
+## 安全限制
+
+1. `{VAULT_SHARED}/plugins-src/` 唯讀，禁止修改
+2. 只能寫入當前工作目錄
+3. 不要在回覆中貼出參考插件的完整原始碼
+4. 使用 Bash 時只用絕對路徑

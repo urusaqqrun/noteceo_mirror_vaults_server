@@ -30,8 +30,8 @@ check_path() {
   target=$(canonicalize_path "$CWD" "$raw_path")
   [ -z "$target" ] && deny_pretooluse "無法解析目標路徑: $raw_path"
 
-  # shared 目錄：僅允許讀取類操作
-  if path_within_root "$target" "$SHARED_ROOT"; then
+  # plugin scope：允許唯讀存取 shared 目錄
+  if [ "$TASK_SCOPE" = "plugin" ] && path_within_root "$target" "$SHARED_ROOT"; then
     case "$tool_action" in
       write|delete|move)
         deny_pretooluse "${SHARED_ROOT}/ 是唯讀目錄，禁止寫入"

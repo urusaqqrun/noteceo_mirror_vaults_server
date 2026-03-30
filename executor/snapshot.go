@@ -20,6 +20,9 @@ func isSystemFile(relPath string) bool {
 	if strings.HasPrefix(relPath, ".CubeLV/") {
 		return true
 	}
+	if strings.HasPrefix(relPath, "plugins/") {
+		return true
+	}
 	return false
 }
 

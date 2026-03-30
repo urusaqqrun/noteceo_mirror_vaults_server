@@ -94,6 +94,9 @@ func main() {
 	skillHandler := api.NewSkillHandler(vaultFS)
 	skillHandler.RegisterRoutes(mux)
 
+	pluginHandler := api.NewPluginHandler(vaultFS)
+	pluginHandler.RegisterRoutes(mux)
+
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
 			"status": "ok",

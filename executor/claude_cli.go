@@ -233,6 +233,11 @@ func fixClaudeHomePerms() {
 	})
 }
 
+// NewClaudeCmdExported 是 newClaudeCmd 的 exported 版本，供其他 package 使用
+func NewClaudeCmdExported(ctx context.Context, workDir, scope, userID string, claudeArgs []string) *exec.Cmd {
+	return newClaudeCmd(ctx, workDir, scope, userID, claudeArgs)
+}
+
 // newClaudeCmd 建立 claude CLI 指令，以 member 專屬 UID 運行
 func newClaudeCmd(ctx context.Context, workDir, scope, userID string, claudeArgs []string) *exec.Cmd {
 	var cmd *exec.Cmd
