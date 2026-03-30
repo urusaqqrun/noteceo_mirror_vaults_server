@@ -903,7 +903,6 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 							wbResult.Created, wbResult.Updated, wbResult.Moved,
 							wbResult.Deleted, wbResult.Errors)
 
-						// 從 ProcessDiff 結果建立 artifact 清單
 						var artifacts []map[string]interface{}
 						for _, entry := range entries {
 							if entry.Action == mirror.ImportActionSkip {
