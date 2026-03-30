@@ -894,13 +894,21 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 	}
 
-	// 6.5 偵測 <<<FORGE:xxx>>> 標記
-	if idx := strings.Index(accumulatedText, "<<<FORGE:"); idx >= 0 {
-		end := strings.Index(accumulatedText[idx:], ">>>")
+	// 6.5 偵測 <<<FORGE:xxx>>> 或 <<<FORGE xxx>>> 標記
+	forgeIdx := strings.Index(accumulatedText, "<<<FORGE:")
+	if forgeIdx < 0 {
+		forgeIdx = strings.Index(accumulatedText, "<<<FORGE ")
+	}
+	if forgeIdx >= 0 {
+		// 找 prefix 長度（"<<<FORGE:" 或 "<<<FORGE "）
+		prefixEnd := forgeIdx + len("<<<FORGE:")
+		if accumulatedText[forgeIdx+len("<<<FORGE")] == ' ' {
+			prefixEnd = forgeIdx + len("<<<FORGE ")
+		}
+		end := strings.Index(accumulatedText[forgeIdx:], ">>>")
 		if end > 0 {
-			forgeTitle = accumulatedText[idx+len("<<<FORGE:") : idx+end]
-			// 從 accumulatedText 中移除標記行
-			marker := accumulatedText[idx : idx+end+len(">>>")]
+			forgeTitle = strings.TrimSpace(accumulatedText[prefixEnd : forgeIdx+end])
+			marker := accumulatedText[forgeIdx : forgeIdx+end+len(">>>")]
 			accumulatedText = strings.Replace(accumulatedText, marker, "", 1)
 			accumulatedText = strings.TrimSpace(accumulatedText)
 			log.Printf("[PluginForge] detected forge marker: title=%q, member=%s", forgeTitle, session.memberID)
