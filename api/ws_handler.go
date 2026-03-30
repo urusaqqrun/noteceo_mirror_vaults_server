@@ -40,6 +40,7 @@ type WsSession struct {
 	sessionID string
 	mode      string
 	model     string
+	lang      string
 	taskID    string
 	status    string // idle, asking, interrupted
 	mu        sync.Mutex
@@ -231,6 +232,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		sessionID: sessionID,
 		mode:      mode,
 		model:     model,
+		lang:      lang,
 		status:    "idle",
 		done:      make(chan struct{}),
 	}
@@ -472,7 +474,11 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				}
 			}
 		}
-		h.chatStore.InsertChatMessage(context.Background(), userMsg)
+		if err := h.chatStore.InsertChatMessage(context.Background(), userMsg); err != nil {
+			log.Printf("[SessionMapping] InsertChatMessage(user) FAILED — sessionID=%s, err=%v", session.sessionID, err)
+		} else {
+			log.Printf("[SessionMapping] InsertChatMessage(user) OK — sessionID=%s, msgID=%s", session.sessionID, userMsg.ID)
+		}
 	}
 
 	// 2. Ensure StreamCLI is alive
@@ -531,27 +537,44 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 	}
 
-	sendStart := time.Now()
-	eventCh, err := cli.SendMessage(cliContent)
+	// 6. Send and process events (with resume-failure retry)
+	var (
+		accumulatedText      string
+		accumulatedThinking  string
+		sentToolUseIDs       map[string]bool
+		accumulatedToolCalls []map[string]interface{}
+		tokenUsage           json.RawMessage
+		resumeRetried        bool
+		resumeFailedNoConv   bool
+		sendStart            time.Time
+		eventCh              <-chan executor.StreamEvent
+		sendErr              error
+		cliReadySent         bool
+		firstStdoutReceived  bool
+	)
+
+sendAndProcess:
+	accumulatedText = ""
+	accumulatedThinking = ""
+	sentToolUseIDs = map[string]bool{}
+	accumulatedToolCalls = nil
+	tokenUsage = nil
+	resumeFailedNoConv = false
+	cliReadySent = false
+	firstStdoutReceived = false
+
+	sendStart = time.Now()
+	eventCh, sendErr = cli.SendMessage(cliContent)
 	log.Printf("[CacheProfile] sendMessage DONE — %dms", time.Since(sendStart).Milliseconds())
-	if err != nil {
+	if sendErr != nil {
 		session.Send(map[string]interface{}{
 			"type":     "stream_error",
 			"memberID": session.memberID,
-			"error":    fmt.Sprintf("CLI send error: %v", err),
+			"error":    fmt.Sprintf("CLI send error: %v", sendErr),
 		})
 		return
 	}
 
-	// 6. Push events to WebSocket
-	accumulatedText := ""
-	accumulatedThinking := ""
-	sentToolUseIDs := map[string]bool{}
-	var accumulatedToolCalls []map[string]interface{}
-	var tokenUsage json.RawMessage
-
-	cliReadySent := false
-	firstStdoutReceived := false
 	for event := range eventCh {
 		if event.Type != "stdout" {
 			continue
@@ -745,11 +768,16 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				}
 			}
 			log.Printf("[WS-CLI] error_during_execution: %s", errStr)
-			session.Send(map[string]interface{}{
-				"type":     "stream_error",
-				"memberID": session.memberID,
-				"error":    errStr,
-			})
+			if !resumeRetried && strings.Contains(errStr, "No conversation found") {
+				resumeFailedNoConv = true
+				log.Printf("[WS-CLI] resume failed (No conversation found), will fallback to fresh session")
+			} else {
+				session.Send(map[string]interface{}{
+					"type":     "stream_error",
+					"memberID": session.memberID,
+					"error":    errStr,
+				})
+			}
 
 		case eventType == "result" && subtype == "success":
 			if resultText, ok := parsed["result"].(string); ok && resultText != "" && accumulatedText == "" {
@@ -797,6 +825,54 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 	}
 
+	// Resume fallback: CLI 回報 "No conversation found" 時，用新 session + 歷史注入重試
+	if resumeFailedNoConv && !resumeRetried {
+		resumeRetried = true
+		log.Printf("[WS-CLI] resume fallback: killing broken CLI, starting fresh session with history injection")
+
+		session.mu.Lock()
+		if session.cli != nil {
+			session.cli.Kill()
+			session.cli = nil
+		}
+		session.mu.Unlock()
+
+		workDir := filepath.Join(h.vaultRoot, session.memberID)
+		if session.sessionID != "" {
+			executor.CleanupSessionJSONL(session.sessionID, workDir)
+		}
+
+		newCLI, newErr := executor.NewStreamCLI(workDir, "chat", session.memberID, session.sessionID, session.model, false, 5*time.Minute)
+		if newErr != nil {
+			log.Printf("[WS-CLI] fallback CLI start failed: %v", newErr)
+			session.Send(map[string]interface{}{
+				"type":     "stream_error",
+				"memberID": session.memberID,
+				"error":    fmt.Sprintf("fallback CLI error: %v", newErr),
+			})
+		} else {
+			session.mu.Lock()
+			session.cli = newCLI
+			session.mu.Unlock()
+			cli = newCLI
+
+			historyCtx := h.buildResumeHistoryContext(session.sessionID, session.mode)
+			if historyCtx != "" {
+				newInstruction := historyCtx + "\n\n---\n\n" + instruction
+				cliContent = newInstruction
+				if msgObj != nil {
+					if blocks := buildContentBlocks(newInstruction, msgObj); blocks != nil {
+						cliContent = blocks
+					}
+				}
+			}
+
+			isCacheBuilding = true
+			session.Send(map[string]interface{}{"type": "cli_preparing"})
+			goto sendAndProcess
+		}
+	}
+
 	// （FORGE 標記偵測已移除 — 改用 MCP tool plugin_forge 觸發）
 
 	// 7. Save assistant message
@@ -815,7 +891,12 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 				assistantMsg.ToolCalls = b
 			}
 		}
-		h.chatStore.InsertChatMessage(context.Background(), assistantMsg)
+		if err := h.chatStore.InsertChatMessage(context.Background(), assistantMsg); err != nil {
+			log.Printf("[SessionMapping] InsertChatMessage(assistant) FAILED — sessionID=%s, err=%v", session.sessionID, err)
+		} else {
+			log.Printf("[SessionMapping] InsertChatMessage(assistant) OK — sessionID=%s, msgID=%s, contentLen=%d",
+				session.sessionID, assistantMsg.ID, len(accumulatedText))
+		}
 		assistantMsgID = assistantMsg.ID
 	}
 
@@ -1135,6 +1216,59 @@ func (h *WsHandler) rebuildSessionJSONL(session *WsSession, workDir string) {
 	}
 }
 
+// buildResumeHistoryContext 從 DB 取得歷史訊息，找到最新 3 則 user 發話，
+// 從最舊的那則開始截取所有訊息，組成上下文字串注入給新 session。
+func (h *WsHandler) buildResumeHistoryContext(sessionID, mode string) string {
+	msgs, _, err := h.chatStore.GetMessagesAfter(
+		context.Background(), sessionID, mode, "", 200)
+	if err != nil || len(msgs) == 0 {
+		return ""
+	}
+
+	// 排除最後一筆（剛才才 insert 的 user message）
+	if len(msgs) > 1 && msgs[len(msgs)-1].Role == "user" {
+		msgs = msgs[:len(msgs)-1]
+	}
+	if len(msgs) == 0 {
+		return ""
+	}
+
+	// 找所有 user 訊息的 index
+	var userIdxs []int
+	for i, m := range msgs {
+		if m.Role == "user" {
+			userIdxs = append(userIdxs, i)
+		}
+	}
+	if len(userIdxs) == 0 {
+		return ""
+	}
+
+	// 從最新 3 則 user 發話的最舊那則開始截取
+	startIdx := userIdxs[0]
+	if len(userIdxs) > 3 {
+		startIdx = userIdxs[len(userIdxs)-3]
+	}
+
+	var parts []string
+	parts = append(parts, "[以下是先前的對話歷史，請基於這些上下文繼續對話]")
+	for _, m := range msgs[startIdx:] {
+		switch m.Role {
+		case "user":
+			parts = append(parts, fmt.Sprintf("\nUser: %s", m.Content))
+		case "assistant":
+			content := m.Content
+			if len(content) > 800 {
+				content = content[:800] + "…（已截斷）"
+			}
+			parts = append(parts, fmt.Sprintf("\nAssistant: %s", content))
+		}
+	}
+	parts = append(parts, "\n[對話歷史結束]")
+
+	return strings.Join(parts, "\n")
+}
+
 func (h *WsHandler) handleInterrupt(session *WsSession) {
 	session.mu.Lock()
 	cli := session.cli
@@ -1202,7 +1336,7 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	fullPrompt := fmt.Sprintf("%s\n\n---\n\n插件目錄名稱：plugins/%s/\n用戶需求：%s", instructions, cleanDir, userPrompt)
 	workDir := filepath.Join(vaultRoot, memberID)
 
-	sendWS(map[string]interface{}{"type": "sub_agent_intent", "intent": "啟動插件鍛造環境..."})
+	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_init"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -1262,39 +1396,40 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 						if !ok || bm["type"] != "tool_use" {
 							continue
 						}
-						toolName, _ := bm["name"].(string)
-						input, _ := bm["input"].(map[string]interface{})
-						var intent string
-						switch toolName {
-						case "Read":
-							fp, _ := input["file_path"].(string)
-							intent = "讀取 " + filepath.Base(fp)
-						case "Write":
-							fp, _ := input["file_path"].(string)
-							intent = "建立 " + filepath.Base(fp)
-						case "Edit":
-							fp, _ := input["file_path"].(string)
-							intent = "修改 " + filepath.Base(fp)
-						case "Bash":
-							if d, _ := input["description"].(string); d != "" {
-								intent = d
-							} else if c, _ := input["command"].(string); c != "" {
-								if len(c) > 50 {
-									c = c[:50] + "..."
-								}
-								intent = "執行: " + c
+					toolName, _ := bm["name"].(string)
+					input, _ := bm["input"].(map[string]interface{})
+					evt := map[string]interface{}{"type": "sub_agent_intent", "tool_name": toolName}
+					switch toolName {
+					case "Read", "Write", "Edit":
+						if fp, _ := input["file_path"].(string); fp != "" {
+							evt["file_name"] = filepath.Base(fp)
+						}
+					case "Bash":
+						if d, _ := input["description"].(string); d != "" {
+							evt["description"] = d
+						} else if c, _ := input["command"].(string); c != "" {
+							if len(c) > 50 {
+								c = c[:50] + "..."
 							}
-						case "Glob":
-							intent = "搜尋檔案..."
-						case "Grep":
-							intent = "搜尋程式碼..."
-						default:
-							intent = toolName
+							evt["command"] = c
 						}
-						if intent != "" && intent != lastIntent {
-							lastIntent = intent
-							sendWS(map[string]interface{}{"type": "sub_agent_intent", "intent": intent})
+					case "Glob":
+						if p, _ := input["pattern"].(string); p != "" {
+							evt["pattern"] = p
 						}
+					case "Grep":
+						if p, _ := input["pattern"].(string); p != "" {
+							evt["pattern"] = p
+						}
+					}
+					intentKey := toolName
+					if fn, ok := evt["file_name"].(string); ok {
+						intentKey += ":" + fn
+					}
+					if intentKey != lastIntent {
+						lastIntent = intentKey
+						sendWS(evt)
+					}
 					}
 				}
 			}
@@ -1325,7 +1460,7 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		}
 	}
 
-	sendWS(map[string]interface{}{"type": "sub_agent_intent", "intent": "編譯插件..."})
+	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_compile"})
 
 	// esbuild 打包（通用 external：所有 bare import 都 external，前端 require shim 解析）
 	entryPath := filepath.Join(workDir, "plugins", pluginDir, "main.tsx")
@@ -1350,7 +1485,7 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		bundleHash = fmt.Sprintf("%x", hashSum[:8])
 	}
 
-	sendWS(map[string]interface{}{"type": "sub_agent_intent", "intent": "註冊插件..."})
+	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_register"})
 
 	// 寫入 PLUGIN item（vault JSON + PG）
 	pluginID := fmt.Sprintf("%x%012x", time.Now().UnixNano()&0xFFFFFFFF, time.Now().UnixNano()>>32)
@@ -1393,62 +1528,79 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 }
 
 func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg string) {
+	log.Printf("[SessionMapping] maybeGenerateTitle called — sessionID=%s, member=%s, mode=%s",
+		session.sessionID, session.memberID, session.mode)
+
 	msgs, _, err := h.chatStore.GetMessagesAfter(context.Background(), session.sessionID, session.mode, "", 5)
-	if err != nil || len(msgs) > 2 {
+	if err != nil {
+		log.Printf("[SessionMapping] GetMessagesAfter error — sessionID=%s, err=%v", session.sessionID, err)
 		return
 	}
+	if len(msgs) > 2 {
+		log.Printf("[SessionMapping] skip title generation — sessionID=%s, msgCount=%d (>2, not first round)",
+			session.sessionID, len(msgs))
+		return
+	}
+	log.Printf("[SessionMapping] will generate title — sessionID=%s, msgCount=%d", session.sessionID, len(msgs))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	log.Printf("[WS] generating title for session %s via ai-service...", session.sessionID)
 
 	aiServiceURL := os.Getenv("AI_SERVICE_URL")
 	if aiServiceURL == "" {
 		aiServiceURL = "http://chatbot.svc.local:8000"
 	}
 
+	titleLang := session.lang
+	if titleLang == "" {
+		titleLang = "繁體中文"
+	}
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"userMessage":      userMsg,
 		"assistantMessage": assistantMsg,
-		"lang":             "繁體中文",
+		"lang":             titleLang,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", aiServiceURL+"/cubelv/generate_thread_title", bytes.NewReader(reqBody))
 	if err != nil {
-		log.Printf("[WS] title request error: %v", err)
+		log.Printf("[SessionMapping] title request create error — sessionID=%s, err=%v", session.sessionID, err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	log.Printf("[SessionMapping] calling ai-service for title — sessionID=%s, url=%s", session.sessionID, aiServiceURL)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[WS] title API error: %v", err)
+		log.Printf("[SessionMapping] title API call FAILED — sessionID=%s, err=%v", session.sessionID, err)
 		return
 	}
 	defer resp.Body.Close()
+	log.Printf("[SessionMapping] title API responded — sessionID=%s, status=%d", session.sessionID, resp.StatusCode)
 
 	var result struct {
 		Title string `json:"title"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Title == "" {
-		log.Printf("[WS] title parse error: %v", err)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("[SessionMapping] title JSON decode error — sessionID=%s, err=%v", session.sessionID, err)
+		return
+	}
+	if result.Title == "" {
+		log.Printf("[SessionMapping] title is empty — sessionID=%s", session.sessionID)
 		return
 	}
 
-	title := result.Title
-	if title == "" {
+	log.Printf("[SessionMapping] AddSessionMapping — sessionID=%s, member=%s, title=%s", session.sessionID, session.memberID, result.Title)
+	if err := h.chatStore.AddSessionMapping(context.Background(), session.memberID, session.sessionID, result.Title, session.mode); err != nil {
+		log.Printf("[SessionMapping] AddSessionMapping FAILED — sessionID=%s, err=%v", session.sessionID, err)
 		return
 	}
-
-	log.Printf("[WS] generated title: %s", title)
-	h.chatStore.AddSessionMapping(context.Background(), session.memberID, session.sessionID, title, session.mode)
+	log.Printf("[SessionMapping] AddSessionMapping OK — sessionID=%s", session.sessionID)
 
 	session.Send(map[string]interface{}{
 		"type":       "session_title_update",
 		"memberID":   session.memberID,
 		"session_id": session.sessionID,
-		"title":      title,
+		"title":      result.Title,
 	})
 }
 
