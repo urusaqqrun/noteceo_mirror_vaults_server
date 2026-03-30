@@ -97,6 +97,7 @@ Temporary Items
 
 # Deploy artifacts
 mirror-service-task-definition-updated.json
+/builtin-plugins-src/
 
 # Local-only folders (do not commit)
 /docs/

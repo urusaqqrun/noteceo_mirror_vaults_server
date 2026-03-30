@@ -26,6 +26,15 @@ mkdir -p "$VAULT_ROOT/shared"
 chown root:root "$VAULT_ROOT/shared"
 chmod 755 "$VAULT_ROOT/shared"
 
+# 同步內建插件原始碼到 EFS shared 目錄
+if [ -d "/app/builtin-plugins-src" ]; then
+  echo "同步內建插件原始碼到 $VAULT_ROOT/shared/plugins-src/ ..."
+  mkdir -p "$VAULT_ROOT/shared/plugins-src"
+  cp -r /app/builtin-plugins-src/* "$VAULT_ROOT/shared/plugins-src/"
+  chmod -R a+rX "$VAULT_ROOT/shared/plugins-src"
+  echo "✅ 內建插件原始碼同步完成"
+fi
+
 # 打印環境配置（不包含敏感數據）
 echo "啟動配置:"
 echo "- 端口: ${PORT:-8080}"
@@ -35,8 +44,9 @@ echo "- Redis: $([ -n "$REDIS_URI" ] && echo "已配置" || echo "未配置")"
 echo "- 最大並發任務: ${MAX_CONCURRENT_TASKS:-3}"
 echo "- Claude CLI: $(command -v claude &>/dev/null && echo "已安裝" || echo "未安裝")"
 
-# 替換 CLAUDE.md 模板中的 {AI_SERVICE_URL} 為實際環境變數值
+# 替換 CLAUDE.md 模板中的 placeholder 為實際環境變數值
 sed -i "s|{AI_SERVICE_URL}|${AI_SERVICE_URL:-http://chatbot.svc.local:8000}|g" /home/mirror/.claude/CLAUDE.md
+sed -i "s|{VAULT_SHARED}|${VAULT_ROOT}/shared|g" /home/mirror/.claude/CLAUDE.md
 
 # 啟動主程序
 echo "啟動 vault-mirror-service..."

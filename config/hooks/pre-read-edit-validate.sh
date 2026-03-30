@@ -26,6 +26,20 @@ TARGET_PATH=$(canonicalize_path "$CWD" "$FILE_PATH")
 if [ -z "$TARGET_PATH" ]; then
   deny_pretooluse "無法解析目標路徑"
 fi
+
+# shared 目錄：僅允許 Read，禁止 Edit
+VR="${VAULT_ROOT:-/vaults}"
+SHARED_ROOT="$VR/shared"
+if path_within_root "$TARGET_PATH" "$SHARED_ROOT"; then
+  ACTION=$(classify_tool_action "${TOOL_NAME:-Edit}")
+  case "$ACTION" in
+    write|delete|move)
+      deny_pretooluse "${SHARED_ROOT}/ 是唯讀目錄，禁止編輯"
+      ;;
+  esac
+  exit 0
+fi
+
 if ! path_within_root "$TARGET_PATH" "$CWD"; then
   deny_pretooluse "禁止存取工作目錄範圍外的路徑"
 fi
