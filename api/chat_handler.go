@@ -239,24 +239,35 @@ func chatWriteError(w http.ResponseWriter, status int, msg string) {
 }
 
 // formatMessages converts []ChatMessage into the frontend-expected format.
+// 只回傳 user-visible 的欄位，不回傳 thinking、tool_calls 等內部資料。
+// tool 訊息中包含 noteID 的轉換為 note_embed 格式，其餘 tool 訊息不回傳。
 func formatMessages(rows []database.ChatMessage) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(rows))
 	for _, row := range rows {
+		if row.Role == "tool" {
+			var toolData map[string]interface{}
+			if json.Unmarshal([]byte(row.Content), &toolData) == nil {
+				if noteID, ok := toolData["noteID"].(string); ok && noteID != "" {
+					matchedFolders := toolData["matchedFolderNames"]
+					matchedJSON, _ := json.Marshal(matchedFolders)
+					if matchedJSON == nil {
+						matchedJSON = []byte("[]")
+					}
+					content := `<note-embed note-id="` + noteID + `"></note-embed><note-folder-selector note-id="` + noteID + `" matched-folders='` + string(matchedJSON) + `'></note-folder-selector>`
+					result = append(result, map[string]interface{}{
+						"role":    "note_embed",
+						"content": content,
+					})
+				}
+			}
+			continue
+		}
 		msg := map[string]interface{}{
 			"role":    row.Role,
 			"content": row.Content,
 		}
 		if row.Role == "assistant" {
 			msg["checkpoint_id"] = row.ID
-			if row.Thinking != "" {
-				msg["thinking"] = row.Thinking
-			}
-			if len(row.ToolCalls) > 0 {
-				msg["tool_calls"] = row.ToolCalls
-			}
-		}
-		if row.Role == "tool" && row.ToolCallID != "" {
-			msg["tool_call_id"] = row.ToolCallID
 		}
 		if len(row.AttachedItems) > 0 {
 			msg["attachedItems"] = row.AttachedItems

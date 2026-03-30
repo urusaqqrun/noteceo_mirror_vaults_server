@@ -364,6 +364,136 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// toolNameToActivityLabel 將 tool 名稱映射為使用者可讀的活動狀態文案
+func toolNameToActivityLabel(toolName string, input map[string]interface{}) string {
+	action, _ := input["action"].(string)
+	actionLower := strings.ToLower(action)
+
+	switch toolName {
+	case "edit_note":
+		switch actionLower {
+		case "create":
+			if title, ok := input["title"].(string); ok && title != "" {
+				return "正在建立筆記 " + title
+			}
+			return "正在建立筆記"
+		case "update":
+			return "正在編輯筆記"
+		case "delete":
+			return "正在刪除筆記"
+		default:
+			return "正在處理筆記"
+		}
+	case "edit_folder":
+		switch actionLower {
+		case "create":
+			return "正在建立資料夾"
+		case "create_group":
+			return "正在建立資料夾群組"
+		case "delete":
+			return "正在刪除資料夾"
+		case "delete_group":
+			return "正在刪除資料夾群組"
+		default:
+			return "正在編輯資料夾"
+		}
+	case "edit_folder_tree":
+		return "正在編輯資料夾結構"
+	case "edit_task":
+		if actionLower == "create" {
+			return "正在建立任務"
+		}
+		return "正在編輯任務"
+	case "report_task":
+		return "正在回報任務"
+	case "edit_card":
+		switch actionLower {
+		case "create":
+			return "正在建立卡片"
+		case "delete":
+			return "正在刪除卡片"
+		default:
+			return "正在編輯卡片"
+		}
+	case "create_card_type":
+		return "正在建立卡片類型"
+	case "edit_card_type":
+		if actionLower == "delete" {
+			return "正在刪除卡片類型"
+		}
+		return "正在編輯卡片類型"
+	case "edit_card_group":
+		switch actionLower {
+		case "create":
+			return "正在建立卡片群組"
+		case "delete":
+			return "正在刪除卡片群組"
+		default:
+			return "正在編輯卡片群組"
+		}
+	case "edit_chart":
+		switch actionLower {
+		case "create":
+			return "正在建立圖表"
+		case "delete":
+			return "正在刪除圖表"
+		default:
+			return "正在編輯圖表"
+		}
+	case "create_chart_type":
+		return "正在建立圖表類型"
+	case "edit_chart_type":
+		if actionLower == "delete" {
+			return "正在刪除圖表類型"
+		}
+		return "正在編輯圖表類型"
+	case "get_tree":
+		return "正在查看結構"
+	case "get_folders":
+		return "正在查看資料夾"
+	case "get_notes":
+		return "正在查看筆記"
+	case "get_card_type", "get_card":
+		return "正在查看卡片"
+	case "get_chart_type", "get_chart":
+		return "正在查看圖表"
+	case "think_purpose":
+		return "正在思考"
+	case "search_mergeable_note_in_folder":
+		return "正在搜尋相關筆記"
+	case "merge_notes":
+		return "正在合併筆記"
+	case "web_search":
+		if q, ok := input["q"].(string); ok && q != "" {
+			return "正在搜尋 " + q
+		}
+		return "正在搜尋網路"
+	case "fetch":
+		return "正在擷取網頁"
+	case "create_note":
+		return "正在建立筆記"
+	case "create_todo":
+		return "正在建立待辦"
+	case "edit_todo":
+		return "正在編輯待辦"
+	// CLI 內建工具
+	case "Read":
+		return "正在讀取檔案"
+	case "Write":
+		return "正在寫入檔案"
+	case "Edit", "MultiEdit":
+		return "正在編輯檔案"
+	case "Bash":
+		return "正在執行操作"
+	case "Grep", "Glob":
+		return "正在搜尋資料"
+	case "TodoRead", "TodoWrite":
+		return "正在處理任務清單"
+	default:
+		return "正在處理..."
+	}
+}
+
 func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map[string]interface{}) {
 	handleStart := time.Now()
 	log.Printf("[CacheProfile] handleMessage START — member=%s session=%s", session.memberID, session.sessionID)
@@ -501,6 +631,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	var accumulatedToolCalls []map[string]interface{}
 	var tokenUsage json.RawMessage
 	var forgeTitle string // 非空 = 偵測到 <<<FORGE:xxx>>> 標記
+	thinkingSent := false
 
 	cliReadySent := false
 	firstStdoutReceived := false
@@ -523,7 +654,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 			})
 		}
 
-		log.Printf("[WS-CLI] raw line: %s", event.Data[:min(len(event.Data), 2000)])
+		log.Printf("[WS-CLI] raw line: len=%d", len(event.Data))
 
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(event.Data), &parsed); err != nil {
@@ -565,17 +696,18 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 							"accumulated": accumulatedText,
 						})
 					}
-				case "thinking_delta":
-					text, _ := delta["thinking"].(string)
-					if text != "" {
-						accumulatedThinking += text
+			case "thinking_delta":
+				text, _ := delta["thinking"].(string)
+				if text != "" {
+					accumulatedThinking += text
+					if !thinkingSent {
+						thinkingSent = true
 						session.Send(map[string]interface{}{
-							"type":        "thinking_token",
-							"memberID":    session.memberID,
-							"token":       text,
-							"accumulated": accumulatedThinking,
+							"type":  "activity_status",
+							"label": "思考中...",
 						})
 					}
+				}
 				}
 			}
 
@@ -600,93 +732,106 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 									"accumulated": accumulatedText,
 								})
 							}
-						case "thinking":
-							text, _ := blockMap["thinking"].(string)
-							if text != "" && text != accumulatedThinking {
-								accumulatedThinking = text
+					case "thinking":
+						text, _ := blockMap["thinking"].(string)
+						if text != "" && text != accumulatedThinking {
+							accumulatedThinking = text
+							if !thinkingSent {
+								thinkingSent = true
 								session.Send(map[string]interface{}{
-									"type":        "thinking_token",
-									"memberID":    session.memberID,
-									"token":       text,
-									"accumulated": accumulatedThinking,
+									"type":  "activity_status",
+									"label": "思考中...",
 								})
 							}
+						}
 				case "tool_use":
-					toolID, _ := blockMap["id"].(string)
-					if toolID != "" && sentToolUseIDs[toolID] {
-						continue
-					}
-					sentToolUseIDs[toolID] = true
-					inputJSON, _ := json.Marshal(blockMap["input"])
-					tc := map[string]interface{}{
-						"id":   toolID,
-						"type": "function",
-						"function": map[string]interface{}{
-							"name":      blockMap["name"],
-							"arguments": string(inputJSON),
-						},
-					}
-					accumulatedToolCalls = append(accumulatedToolCalls, tc)
-					session.Send(map[string]interface{}{
-						"type":       "message",
-						"role":       "assistant",
-						"content":    "",
-						"tool_calls": []map[string]interface{}{tc},
-					})
+				toolID, _ := blockMap["id"].(string)
+				if toolID != "" && sentToolUseIDs[toolID] {
+					continue
+				}
+				sentToolUseIDs[toolID] = true
+				inputJSON, _ := json.Marshal(blockMap["input"])
+				tc := map[string]interface{}{
+					"id":   toolID,
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      blockMap["name"],
+						"arguments": string(inputJSON),
+					},
+				}
+				accumulatedToolCalls = append(accumulatedToolCalls, tc)
+				toolName, _ := blockMap["name"].(string)
+				toolInput, _ := blockMap["input"].(map[string]interface{})
+				session.Send(map[string]interface{}{
+					"type":  "activity_status",
+					"label": toolNameToActivityLabel(toolName, toolInput),
+				})
 						}
 					}
 				}
 			}
 
-		case eventType == "result" && subtype == "tool_result":
-			toolCallID, _ := parsed["tool_use_id"].(string)
-			toolContent, _ := parsed["content"].(string)
-			session.Send(map[string]interface{}{
-				"type":         "message",
-				"role":         "tool",
-				"content":      toolContent,
-				"tool_call_id": toolCallID,
-			})
-			if !noSave {
-				h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
-					SessionID:  session.sessionID,
-					Mode:       session.mode,
-					Role:       "tool",
-					Content:    toolContent,
-					ToolCallID: toolCallID,
+	case eventType == "result" && subtype == "tool_result":
+		toolCallID, _ := parsed["tool_use_id"].(string)
+		toolContent, _ := parsed["content"].(string)
+		// 檢查是否包含 noteID，有的話送 note_embed 事件給前端
+		var toolResultData map[string]interface{}
+		if json.Unmarshal([]byte(toolContent), &toolResultData) == nil {
+			if noteID, ok := toolResultData["noteID"].(string); ok && noteID != "" {
+				matchedFolders, _ := toolResultData["matchedFolderNames"]
+				session.Send(map[string]interface{}{
+					"type":               "note_embed",
+					"noteID":             noteID,
+					"matchedFolderNames": matchedFolders,
 				})
 			}
+		}
+		if !noSave {
+			h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+				SessionID:  session.sessionID,
+				Mode:       session.mode,
+				Role:       "tool",
+				Content:    toolContent,
+				ToolCallID: toolCallID,
+			})
+		}
 
-		case eventType == "user":
-			if msgContent, ok := parsed["message"].(map[string]interface{}); ok {
-				if contentArr, ok := msgContent["content"].([]interface{}); ok {
-					for _, block := range contentArr {
-						blockMap, ok := block.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						if blockMap["type"] == "tool_result" {
-							tcID, _ := blockMap["tool_use_id"].(string)
-							tcContent, _ := blockMap["content"].(string)
-							session.Send(map[string]interface{}{
-								"type":         "message",
-								"role":         "tool",
-								"content":      tcContent,
-								"tool_call_id": tcID,
-							})
-							if !noSave {
-								h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
-									SessionID:  session.sessionID,
-									Mode:       session.mode,
-									Role:       "tool",
-									Content:    tcContent,
-									ToolCallID: tcID,
+	case eventType == "user":
+		if msgContent, ok := parsed["message"].(map[string]interface{}); ok {
+			if contentArr, ok := msgContent["content"].([]interface{}); ok {
+				for _, block := range contentArr {
+					blockMap, ok := block.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if blockMap["type"] == "tool_result" {
+						tcID, _ := blockMap["tool_use_id"].(string)
+						tcContent, _ := blockMap["content"].(string)
+						// 檢查是否包含 noteID
+						var trData map[string]interface{}
+						if json.Unmarshal([]byte(tcContent), &trData) == nil {
+							if noteID, ok := trData["noteID"].(string); ok && noteID != "" {
+								matchedFolders, _ := trData["matchedFolderNames"]
+								session.Send(map[string]interface{}{
+									"type":               "note_embed",
+									"noteID":             noteID,
+									"matchedFolderNames": matchedFolders,
 								})
 							}
+						}
+						if !noSave {
+							h.chatStore.InsertChatMessage(context.Background(), &database.ChatMessage{
+								SessionID:  session.sessionID,
+								Mode:       session.mode,
+								Role:       "tool",
+								Content:    tcContent,
+								ToolCallID: tcID,
+							})
 						}
 					}
 				}
 			}
+		}
 
 		case eventType == "result" && subtype == "error_during_execution":
 			errMsgs, _ := parsed["errors"].([]interface{})
