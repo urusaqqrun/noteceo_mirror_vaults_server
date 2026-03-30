@@ -40,6 +40,7 @@ type WsSession struct {
 	sessionID string
 	mode      string
 	model     string
+	lang      string
 	taskID    string
 	status    string // idle, asking, interrupted
 	mu        sync.Mutex
@@ -231,6 +232,7 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		sessionID: sessionID,
 		mode:      mode,
 		model:     model,
+		lang:      lang,
 		status:    "idle",
 		done:      make(chan struct{}),
 	}
@@ -1549,10 +1551,14 @@ func (h *WsHandler) maybeGenerateTitle(session *WsSession, userMsg, assistantMsg
 		aiServiceURL = "http://chatbot.svc.local:8000"
 	}
 
+	titleLang := session.lang
+	if titleLang == "" {
+		titleLang = "繁體中文"
+	}
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"userMessage":      userMsg,
 		"assistantMessage": assistantMsg,
-		"lang":             "繁體中文",
+		"lang":             titleLang,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", aiServiceURL+"/cubelv/generate_thread_title", bytes.NewReader(reqBody))
