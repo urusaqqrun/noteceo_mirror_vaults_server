@@ -554,6 +554,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	var (
 		accumulatedText      string
 		accumulatedThinking  string
+		prevTurnThinking     string
 		sentToolUseIDs       map[string]bool
 		accumulatedToolCalls []map[string]interface{}
 		tokenUsage           json.RawMessage
@@ -569,6 +570,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 sendAndProcess:
 	accumulatedText = ""
 	accumulatedThinking = ""
+	prevTurnThinking = ""
 	sentToolUseIDs = map[string]bool{}
 	accumulatedToolCalls = nil
 	tokenUsage = nil
@@ -627,6 +629,7 @@ sendAndProcess:
 			innerType, _ := inner["type"].(string)
 
 			if innerType == "message_start" {
+				prevTurnThinking = accumulatedThinking
 				accumulatedText = ""
 				accumulatedThinking = ""
 			}
@@ -653,12 +656,15 @@ sendAndProcess:
 					text, _ := delta["thinking"].(string)
 					if text != "" {
 						accumulatedThinking += text
-						session.Send(map[string]interface{}{
-							"type":        "thinking_token",
-							"memberID":    session.memberID,
-							"token":       text,
-							"accumulated": accumulatedThinking,
-						})
+						// 跨 turn 去重：如果新 turn 的 thinking 仍是前一個 turn 的前綴，跳過發送
+						if prevTurnThinking == "" || !strings.HasPrefix(prevTurnThinking, accumulatedThinking) {
+							session.Send(map[string]interface{}{
+								"type":        "thinking_token",
+								"memberID":    session.memberID,
+								"token":       text,
+								"accumulated": accumulatedThinking,
+							})
+						}
 					}
 				}
 			}
@@ -686,7 +692,7 @@ sendAndProcess:
 							}
 							case "thinking":
 							text, _ := blockMap["thinking"].(string)
-							if text != "" && text != accumulatedThinking {
+							if text != "" && text != accumulatedThinking && text != prevTurnThinking {
 								accumulatedThinking = text
 								session.Send(map[string]interface{}{
 									"type":        "thinking_token",

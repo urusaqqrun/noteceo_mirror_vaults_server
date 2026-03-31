@@ -17,7 +17,7 @@
 
 ```tsx
 const { React } = window.__NC__;
-const { Plugin, registerPluginClass, WorkspaceLeaf, useItemStore } = window.__NC__.sdk;
+const { Plugin, ReactView, registerPluginClass, WorkspaceLeaf, useItemStore } = window.__NC__.sdk;
 
 class MyView extends ReactView {
     getViewType() { return 'my-view'; }
@@ -66,12 +66,12 @@ registerPluginClass(MyPlugin, '我的功能');
 
 動態插件透過 `window.__NC__` 存取所有依賴：
 
-```
-window.__NC__.React / ReactDOM / zustand / i18next / reactI18next
-window.__NC__.sdk.Plugin / registerPluginClass / registerPluginLocales / WorkspaceLeaf
-window.__NC__.sdk.useItemStore / useSelectedItemsStore / useDialogStore / useMenuStore / useOverlayStore
-window.__NC__.sdk.eventBus / useEditorRefStore
-```
+- `window.__NC__.React` / `ReactDOM` / `zustand` / `i18next` / `reactI18next` — 第三方模組
+- `window.__NC__.sdk` — CubeLV 核心 API（`workspace/`、`Store/` 下的所有 named export 自動暴露）
+
+常用的 SDK export（不限於此，完整清單見 `pluginSDK.ts` 的 glob 範圍）：
+- 插件基礎設施：`Plugin`、`ReactView`、`View`、`WorkspaceLeaf`、`registerPluginClass`、`registerPluginLocales`
+- Store：`useItemStore`、`useSelectedItemsStore`、`useDialogStore`、`useMenuStore`、`useOverlayStore`、`eventBus`
 
 **禁止使用 import 語法引入 React 或其他框架**，一律從 `window.__NC__` 取得。
 
