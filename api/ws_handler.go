@@ -1460,6 +1460,13 @@ func sanitizePluginDir(title string) string {
 	return fmt.Sprintf("%s-%x", slug, h[:3])
 }
 
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // executePluginForge 啟動插件鍛造 Sub-Agent（同步阻塞到完成）
 // session 可為 nil（沒有 WebSocket 時不發意圖事件）
 func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle, userPrompt, toolCallID string) map[string]interface{} {
@@ -1518,6 +1525,14 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		"-p", userPromptFull,
 	}
 
+	log.Printf("[PluginForge] === SUB-AGENT LAUNCH ===")
+	log.Printf("[PluginForge] workDir=%s", workDir)
+	log.Printf("[PluginForge] args=%v", args[:len(args)-2]) // 不印 -p prompt 內容（太長）
+	log.Printf("[PluginForge] system-prompt length=%d bytes", len(instructions))
+	if len(instructions) > 200 {
+		log.Printf("[PluginForge] system-prompt preview: %s...", instructions[:200])
+	}
+
 	cmd := executor.NewClaudeCmdExported(ctx, workDir, "plugin", memberID, args)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -1543,66 +1558,105 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		}
 	}()
 
-	// 讀取 Sub-Agent 事件，過濾後發送意圖流
+	// 讀取 Sub-Agent 事件，完整 log + 過濾後發送意圖流
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 	lastIntent := ""
+	eventCount := 0
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
+		eventCount++
 		var parsed map[string]interface{}
 		if json.Unmarshal([]byte(line), &parsed) != nil {
+			log.Printf("[PluginForge-RAW] non-json: %s", truncateStr(line, 300))
 			continue
 		}
-		if parsed["type"] == "assistant" {
+
+		evtType, _ := parsed["type"].(string)
+
+		switch evtType {
+		case "system":
+			log.Printf("[PluginForge-EVT] system: %s", truncateStr(line, 500))
+
+		case "assistant":
 			if mc, ok := parsed["message"].(map[string]interface{}); ok {
+				model, _ := mc["model"].(string)
+				if eventCount <= 3 {
+					log.Printf("[PluginForge-EVT] assistant model=%s", model)
+				}
 				if ca, ok := mc["content"].([]interface{}); ok {
 					for _, block := range ca {
 						bm, ok := block.(map[string]interface{})
-						if !ok || bm["type"] != "tool_use" {
+						if !ok {
 							continue
 						}
-					toolName, _ := bm["name"].(string)
-					input, _ := bm["input"].(map[string]interface{})
-					evt := map[string]interface{}{"type": "sub_agent_intent", "tool_name": toolName}
-					switch toolName {
-					case "Read", "Write", "Edit":
-						if fp, _ := input["file_path"].(string); fp != "" {
-							evt["file_name"] = filepath.Base(fp)
-						}
-					case "Bash":
-						if d, _ := input["description"].(string); d != "" {
-							evt["description"] = d
-						} else if c, _ := input["command"].(string); c != "" {
-							if len(c) > 50 {
-								c = c[:50] + "..."
+						blockType, _ := bm["type"].(string)
+
+						switch blockType {
+						case "thinking":
+							thinking, _ := bm["thinking"].(string)
+							log.Printf("[PluginForge-THINK] %s", truncateStr(thinking, 500))
+
+						case "text":
+							text, _ := bm["text"].(string)
+							log.Printf("[PluginForge-TEXT] %s", truncateStr(text, 300))
+
+						case "tool_use":
+							toolName, _ := bm["name"].(string)
+							input, _ := bm["input"].(map[string]interface{})
+							inputJSON, _ := json.Marshal(input)
+							log.Printf("[PluginForge-TOOL] %s input=%s", toolName, truncateStr(string(inputJSON), 300))
+
+							// 轉發意圖流到前端
+							evt := map[string]interface{}{"type": "sub_agent_intent", "tool_name": toolName}
+							switch toolName {
+							case "Read", "Write", "Edit":
+								if fp, _ := input["file_path"].(string); fp != "" {
+									evt["file_name"] = filepath.Base(fp)
+								}
+							case "Bash":
+								if d, _ := input["description"].(string); d != "" {
+									evt["description"] = d
+								} else if c, _ := input["command"].(string); c != "" {
+									if len(c) > 50 {
+										c = c[:50] + "..."
+									}
+									evt["command"] = c
+								}
+							case "Glob":
+								if p, _ := input["pattern"].(string); p != "" {
+									evt["pattern"] = p
+								}
+							case "Grep":
+								if p, _ := input["pattern"].(string); p != "" {
+									evt["pattern"] = p
+								}
 							}
-							evt["command"] = c
+							intentKey := toolName
+							if fn, ok := evt["file_name"].(string); ok {
+								intentKey += ":" + fn
+							}
+							if intentKey != lastIntent {
+								lastIntent = intentKey
+								sendWS(evt)
+							}
+
+						case "tool_result":
+							content, _ := bm["content"].(string)
+							log.Printf("[PluginForge-RESULT] %s", truncateStr(content, 300))
 						}
-					case "Glob":
-						if p, _ := input["pattern"].(string); p != "" {
-							evt["pattern"] = p
-						}
-					case "Grep":
-						if p, _ := input["pattern"].(string); p != "" {
-							evt["pattern"] = p
-						}
-					}
-					intentKey := toolName
-					if fn, ok := evt["file_name"].(string); ok {
-						intentKey += ":" + fn
-					}
-					if intentKey != lastIntent {
-						lastIntent = intentKey
-						sendWS(evt)
-					}
 					}
 				}
 			}
+
+		case "result":
+			log.Printf("[PluginForge-EVT] result: %s", truncateStr(line, 500))
 		}
 	}
+	log.Printf("[PluginForge] === SUB-AGENT STREAM END === total events=%d", eventCount)
 
 	if waitErr := cmd.Wait(); waitErr != nil {
 		log.Printf("[PluginForge] sub-agent exited with error: %v", waitErr)
@@ -1627,6 +1681,20 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 				}
 			}
 		}
+	}
+
+	if entryFile == "" {
+		// 列出插件目錄內容以利偵錯
+		debugDir := filepath.Join(workDir, "plugins", pluginDir)
+		dirEntries, _ := os.ReadDir(debugDir)
+		var fileNames []string
+		for _, de := range dirEntries {
+			fileNames = append(fileNames, de.Name())
+		}
+		errMsg := fmt.Sprintf("找不到入口檔案 *Plugin.tsx，插件目錄 %s 內容: %v", pluginDir, fileNames)
+		log.Printf("[PluginForge] %s", errMsg)
+		sendWS(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": errMsg})
+		return map[string]interface{}{"status": "error", "error": errMsg}
 	}
 
 	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_compile"})

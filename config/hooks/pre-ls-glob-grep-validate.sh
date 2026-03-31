@@ -26,6 +26,15 @@ check_path() {
   local tool_action="$2"
   [ -z "$raw_path" ] && return 0
 
+  # plugin scope：禁止存取 CLAUDE.md
+  if [ "$TASK_SCOPE" = "plugin" ]; then
+    local bname
+    bname=$(basename "$raw_path")
+    if [ "$bname" = "CLAUDE.md" ]; then
+      deny_pretooluse "plugin scope 禁止存取 CLAUDE.md"
+    fi
+  fi
+
   local target
   target=$(canonicalize_path "$CWD" "$raw_path")
   [ -z "$target" ] && deny_pretooluse "無法解析目標路徑: $raw_path"

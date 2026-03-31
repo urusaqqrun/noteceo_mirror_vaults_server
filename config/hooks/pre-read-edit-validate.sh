@@ -27,8 +27,12 @@ if [ -z "$TARGET_PATH" ]; then
   deny_pretooluse "無法解析目標路徑"
 fi
 
-# plugin scope：允許唯讀存取 shared 目錄
+# plugin scope：禁止讀取 CLAUDE.md，允許唯讀存取 shared 目錄
 if [ "$TASK_SCOPE" = "plugin" ]; then
+  BASENAME=$(basename "$TARGET_PATH")
+  if [ "$BASENAME" = "CLAUDE.md" ]; then
+    deny_pretooluse "plugin scope 禁止讀取 CLAUDE.md"
+  fi
   VR="${VAULT_ROOT:-/vaults}"
   SHARED_ROOT="$VR/shared"
   if path_within_root "$TARGET_PATH" "$SHARED_ROOT"; then

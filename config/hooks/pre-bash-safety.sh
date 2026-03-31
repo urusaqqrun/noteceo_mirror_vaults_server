@@ -83,6 +83,13 @@ elif echo "$NORMALIZED_COMMAND" | grep -qE '(^|[[:space:];|&])(python3?|node|rub
   BASH_ACTION="write"
 fi
 
+# plugin scope：禁止 Bash 存取 CLAUDE.md
+if [ "$TASK_SCOPE" = "plugin" ]; then
+  if echo "$NORMALIZED_COMMAND" | grep -qiE 'CLAUDE\.md'; then
+    deny_pretooluse "plugin scope 禁止存取 CLAUDE.md"
+  fi
+fi
+
 # 規則 3：Bash 只能存取當前工作目錄（plugin scope 額外允許唯讀 shared）
 while IFS= read -r raw_path; do
   [ -z "$raw_path" ] && continue

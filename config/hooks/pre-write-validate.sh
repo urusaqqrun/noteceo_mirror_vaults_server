@@ -37,6 +37,10 @@ DIR=$(dirname "$TARGET_PATH")
 
 # plugin scope 只做邊界檢查，不走 vault 規則
 if [ "$TASK_SCOPE" = "plugin" ]; then
+  BASENAME=$(basename "$TARGET_PATH")
+  if [ "$BASENAME" = "CLAUDE.md" ]; then
+    deny_pretooluse "plugin scope 禁止寫入 CLAUDE.md"
+  fi
   exit 0
 fi
 
