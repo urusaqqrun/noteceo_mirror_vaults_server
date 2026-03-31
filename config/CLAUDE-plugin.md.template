@@ -11,11 +11,10 @@
 
 **在寫任何程式碼之前，你必須完整讀完以下兩個內建插件的所有檔案。不是讀一個檔案，是每個插件目錄下的每一個檔案都讀。**
 
-1. `{VAULT_SHARED}/plugins-src/plugins/todo/` — 完整讀目錄下所有檔案（檔案結構最佳範例：Plugin / View / Store / Item / CSS 各自獨立）
-2. `{VAULT_SHARED}/plugins-src/plugins/note/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
-3. `{VAULT_SHARED}/plugins-src/plugins/classify/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
+1. `{VAULT_SHARED}/plugins-src/plugins/note/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案（標準寫法：Plugin / View / Store / Item / CSS 各自獨立）
+2. `{VAULT_SHARED}/plugins-src/plugins/classify/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案（猴子補丁寫法：跨元件注入 UI、Store 補丁）
 
-讀完後你就知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、registerPluginClass 怎麼呼叫。照著做就對了。
+讀完後你就知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、registerPluginClass 怎麼呼叫、跨元件注入怎麼做。照著做就對了。
 
 ## Plugin 基類 API
 
