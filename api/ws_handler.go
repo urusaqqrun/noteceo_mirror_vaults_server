@@ -1851,6 +1851,7 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 
 		case "result":
 			log.Printf("[PluginForge-EVT] result: %s", truncateStr(line, 500))
+			h.recordBilling(memberID, "forge", session.sessionID, parsed)
 		}
 	}
 	log.Printf("[PluginForge] === SUB-AGENT STREAM END === total events=%d", eventCount)
