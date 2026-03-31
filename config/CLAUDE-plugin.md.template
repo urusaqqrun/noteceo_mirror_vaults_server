@@ -2,168 +2,42 @@
 
 你的任務是建立或修改一個 CubeLV 插件。
 
-## ⚠️ 必讀：動手之前先理解架構
+## 第一步：完整閱讀範例插件（禁止跳過）
 
-**禁止跳過這個步驟。你必須先讀完以下檔案，理解 API 後才能開始寫程式碼。**
+**在寫任何程式碼之前，你必須完整讀完以下兩個內建插件的所有檔案。不是讀一個檔案，是每個插件目錄下的每一個檔案都讀。**
 
-### 必讀檔案（按順序）
+1. `{VAULT_SHARED}/plugins-src/plugins/note/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
+2. `{VAULT_SHARED}/plugins-src/plugins/classify/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
 
-1. `{VAULT_SHARED}/plugins-src/workspace/Plugin.ts` — 插件基類，理解所有可用的註冊方法
-2. `{VAULT_SHARED}/plugins-src/workspace/ReactView.tsx` — View 基類，理解 `renderComponent()` 的用法
-3. `{VAULT_SHARED}/plugins-src/workspace/pluginSDK.ts` — `window.__NC__` 暴露了哪些 API
-4. 至少讀 **1 個**相近的內建插件（在 `{VAULT_SHARED}/plugins-src/plugins/` 下），完整理解一個真實插件如何運作
+讀完後你就知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、registerPluginClass 怎麼呼叫。照著做就對了。
 
-### 讀完後自我檢查
+## 模組 import
 
-在寫任何程式碼之前，確認你能回答：
-- `ReactView.renderComponent()` 需要回傳什麼？
-- `registerPluginClass()` 要在哪裡呼叫？
-- `ensureLeafInPane()` 的參數是什麼？
-- 如何存取宿主的 React？（答案：`window.__NC__.React`，不是 `import`）
-
-## 插件結構
-
-入口必須是 `main.tsx`，結構：
+直接用 `import`，esbuild 自動處理：
 
 ```tsx
-const { React } = window.__NC__;
-const { Plugin, ReactView, registerPluginClass, WorkspaceLeaf, useItemStore } = window.__NC__.sdk;
-
-class MyView extends ReactView {
-    getViewType() { return 'my-view'; }
-    getDisplayText() { return '我的功能'; }
-    renderComponent() { return <MyComponent />; }
-}
-
-export class MyPlugin extends Plugin {
-    onload() {
-        this.registerView('my-view', (leaf) => new MyView(leaf));
-    }
-}
-
-registerPluginClass(MyPlugin, '我的功能');
+import React, { useState, useEffect } from 'react';
+import { Plugin, ReactView, registerPluginClass, useItemStore } from '@cubelv/sdk';
 ```
 
-## Plugin 基類 API
-
-### 註冊方法（卸載時自動清理）
-
-| 方法 | 用途 |
-|------|------|
-| `registerView(type, creator)` | 註冊 View 類型 |
-| `registerOverlay(id, Component)` | 註冊全局浮動元件（dialog / menu） |
-| `registerWindowView(itemType, viewType, opts, onOpen?)` | 宣告 itemType 可開獨立視窗 |
-| `registerEditorExtension(id, ext)` | 註冊 TipTap 編輯器擴展 |
-| `registerSidebarSection(desc)` | 註冊側欄區塊 |
-| `registerSearchProvider(itemType, provider)` | 註冊搜尋 |
-| `registerItemFields(itemType, ext)` | 擴展 itemType schema 欄位 |
-| `registerAIHints(itemType, hints)` | 註冊 AI 操作提示 |
-| `registerAISkill({ name, instruction })` | 註冊 AI 技能指令 |
-| `addCommand(cmd)` | 註冊指令（含快捷鍵） |
-| `registerEvent(event, handler)` | 訂閱 eventBus 事件 |
-| `registerDomEvent(el, type, callback)` | 訂閱 DOM 事件 |
-| `registerInterval(id)` | 註冊 setInterval |
-| `register(cleanup)` | 註冊任意清理函式 |
-
-### Pane 操作
-
-| 方法 | 用途 |
-|------|------|
-| `clearPane(paneId)` | 清空 pane 內所有 leaf |
-| `ensureLeafInPane(paneId, leafId, viewType, sizing)` | 確保 pane 中有指定 leaf（冪等） |
-
-## window.__NC__ SDK
-
-動態插件透過 `window.__NC__` 存取所有依賴：
-
-- `window.__NC__.React` / `ReactDOM` / `zustand` / `i18next` / `reactI18next` — 第三方模組
-- `window.__NC__.sdk` — CubeLV 核心 API（`workspace/`、`Store/` 下的所有 named export 自動暴露）
-
-常用的 SDK export（不限於此，完整清單見 `pluginSDK.ts` 的 glob 範圍）：
-- 插件基礎設施：`Plugin`、`ReactView`、`View`、`WorkspaceLeaf`、`registerPluginClass`、`registerPluginLocales`
-- Store：`useItemStore`、`useSelectedItemsStore`、`useDialogStore`、`useMenuStore`、`useOverlayStore`、`eventBus`
-
-**宿主共享模組**（React、zustand、i18next、@cubelv/sdk）禁止用 import 語法，一律從 `window.__NC__` 取得。
-**第三方庫**（如 canvas-confetti、d3、chart.js 等）可直接 `import`，esbuild 會自動打包進 bundle。需要第三方庫時，在插件目錄建立 `package.json` 並執行 `npm install`：
-
+第三方 npm 庫也直接 `import`，esbuild 會打包進 bundle。需要時先安裝：
 ```bash
 cd /absolute/path/to/plugins/{pluginName}
-npm init -y
-npm install canvas-confetti
+npm init -y && npm install <package>
 ```
 
-編譯前系統會自動檢測 `package.json` 並執行 `npm install`，但建議你自己先安裝以確認依賴正確。
+## 寫入規則
 
-## 數據存取
-
-- 讀取 item：`useItemStore.getState().getByType(...)` 或 `getById(id)`
-- 寫入 item：`useItemStore.getState().upsertItem({...}, { needSync: true })`
-- 跨插件讀取用 `window.electronAPI.getItem(id)`，不要 import 其他插件的 store
-
-## 常用模式
-
-**自治掛載**（訂閱導航狀態決定顯示）：
-```tsx
-this.register(useSelectedItemsStore.subscribe((state) => {
-    const last = state.path.at(-1);
-    if (last?.itemType === 'MY_FOLDER') {
-        this.ensureLeafInPane('centerPane1', 'leaf-my', 'my-view', { size: 340, minSize: 200 });
-    }
-}));
-```
-
-**Dialog**（透過 dialogStore，不直接 import）：
-```tsx
-// 註冊：this.registerOverlay('myDialog', MyDialog);
-// 開啟：useDialogStore.getState().open('myDialog', { item, onConfirm });
-// Dialog 內用 as MyDialogData | null 讀取 data
-```
-
-**Menu**（透過 menuStore）：
-```tsx
-useMenuStore.getState().openAt('myMenu', event.clientX, event.clientY, { item });
-```
-
-## 寫入規則（嚴格遵守）
-
-**所有插件檔案必須寫在 `plugins/{pluginName}/` 目錄下。** 例如建立番茄鐘插件：
-
-```
-plugins/pomodoro/main.tsx          ← 入口（必須）
-plugins/pomodoro/PomodoroView.tsx  ← UI 元件
-plugins/pomodoro/pomodoroStore.ts  ← Store
-plugins/pomodoro/styles.css        ← 樣式
-```
-
-- `pluginName` 使用英文小寫 + 連字號（如 `pomodoro`、`kanban-board`）
-- 入口必須是 `plugins/{pluginName}/main.tsx`
-- 必須 export 繼承 `Plugin` 的 class + 呼叫 `registerPluginClass()`
-- CSS class 用插件名稱前綴避免衝突
-- **禁止**在 `plugins/` 以外的目錄寫入任何檔案
-- 有 i18n 需求時在 `registerPluginClass` 第三參數加 `setupI18n`
-
-## React 程式碼品質（嚴格遵守）
-
-1. **所有 `.map()` 渲染的元素必須加 `key` prop** — 用唯一 id，不要用 index（除非是靜態列表）
-2. **CSS 全部用 inline style 或寫在單獨的 CSS string** — 不要用 CSS modules（bundle 不支援）
-3. **useState 的初始值型別必須正確** — `useState<number>(0)` 不要寫 `useState(null)`
-4. **不要用 useEffect 裡的 async** — 用 IIFE 包裝：`useEffect(() => { (async () => { ... })(); }, [])`
-5. **所有 SVG 元素的子元素也要加 key** — `<circle>`、`<rect>` 在 `.map()` 裡一樣要 key
-6. **插件 CSS class 必須用插件名稱前綴** — 如 `.pomodoro-container` 而非 `.container`
-7. **onunload() 必須清理所有 DOM 副作用** — 插入的 `<style>` 元素、event listener 等
-
-## 交付前自我驗證
-
-寫完程式碼後，逐項檢查：
-- [ ] `registerPluginClass()` 在檔案末尾被呼叫
-- [ ] 所有 `.map()` 的 JSX 都有 `key`
-- [ ] 沒有用 `import React` — 用 `window.__NC__.React`
-- [ ] `onunload()` 清理了 `onload()` 插入的所有東西
-- [ ] CSS class 有插件名稱前綴，不會跟其他插件衝突
+- 所有檔案寫在 `plugins/{pluginName}/`，入口 `main.tsx`
+- `pluginName` 英文小寫 + 連字號
+- 檔案末尾必須呼叫 `registerPluginClass(MyPlugin, '名稱')`
+- CSS class 用插件名稱前綴（如 `.pomodoro-timer`）
+- `.map()` 渲染的 JSX 必須有 `key`
+- `onunload()` 清理 `onload()` 插入的 DOM（如 `<style>`）
+- **禁止在 `plugins/` 以外寫入**
 
 ## 安全限制
 
 1. `{VAULT_SHARED}/plugins-src/` 唯讀，禁止修改
-2. **只能在 `plugins/{pluginName}/` 目錄寫入**，不可寫入 vault 其他位置
-3. 不要在回覆中貼出參考插件的完整原始碼
-4. 使用 Bash 時只用絕對路徑
+2. 只能在 `plugins/{pluginName}/` 寫入
+3. Bash 只用絕對路徑
