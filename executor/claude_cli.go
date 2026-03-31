@@ -542,6 +542,9 @@ func NewStreamCLI(workDir, scope, userID, sessionID, model string, resume bool, 
 	}
 
 	cmd := newClaudeCmd(nil, workDir, scope, userID, args)
+	if sessionID != "" {
+		cmd.Env = append(cmd.Env, "WS_SESSION_ID="+sessionID)
+	}
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {

@@ -126,27 +126,30 @@ func (h *WsHandler) HandleForgeAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[ForgeAPI] received forge request: title=%q member=%s", req.Title, req.MemberID)
+	log.Printf("[ForgeAPI] received forge request: title=%q member=%s wsSession=%s", req.Title, req.MemberID, req.WsSessionID)
 
-	// 找到對應的 WebSocket session 以發送意圖事件
+	// 精確查找 WebSocket session（優先用 wsSessionID，fallback 用 memberID）
 	var session *WsSession
-	sessionCount := 0
-	h.sessions.Range(func(key, value interface{}) bool {
-		sessionCount++
-		if s, ok := value.(*WsSession); ok {
-			log.Printf("[ForgeAPI] checking session key=%v memberID=%s", key, s.memberID)
-			if s.memberID == req.MemberID {
+	if req.WsSessionID != "" {
+		sessionKey := req.MemberID + ":" + req.WsSessionID
+		if val, ok := h.sessions.Load(sessionKey); ok {
+			session = val.(*WsSession)
+			log.Printf("[ForgeAPI] found session by exact key: %s", sessionKey)
+		}
+	}
+	if session == nil {
+		h.sessions.Range(func(key, value interface{}) bool {
+			if s, ok := value.(*WsSession); ok && s.memberID == req.MemberID {
 				session = s
 				return false
 			}
+			return true
+		})
+		if session != nil {
+			log.Printf("[ForgeAPI] found session by memberID fallback: %s", req.MemberID)
+		} else {
+			log.Printf("[ForgeAPI] no active WebSocket session for member %s", req.MemberID)
 		}
-		return true
-	})
-
-	if session == nil {
-		log.Printf("[ForgeAPI] no active WebSocket session for member %s (checked %d sessions)", req.MemberID, sessionCount)
-	} else {
-		log.Printf("[ForgeAPI] found WebSocket session for member %s", req.MemberID)
 	}
 
 	// 從 session 取出對應的 tool_call_id
@@ -568,6 +571,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		accumulatedThinking  string
 		prevTurnThinking     string
 		sentToolUseIDs       map[string]bool
+		pushedForgeIDs       map[string]bool
 		accumulatedToolCalls []map[string]interface{}
 		tokenUsage           json.RawMessage
 		resumeRetried        bool
@@ -584,6 +588,7 @@ sendAndProcess:
 	accumulatedThinking = ""
 	prevTurnThinking = ""
 	sentToolUseIDs = map[string]bool{}
+	pushedForgeIDs = map[string]bool{}
 	accumulatedToolCalls = nil
 	tokenUsage = nil
 	resumeFailedNoConv = false
@@ -651,6 +656,24 @@ sendAndProcess:
 					"sentToolUseCount":    len(sentToolUseIDs),
 				})
 				// #endregion
+			}
+
+			if innerType == "content_block_start" {
+				if cb, ok := inner["content_block"].(map[string]interface{}); ok {
+					if cb["type"] == "tool_use" {
+						toolID, _ := cb["id"].(string)
+						toolName, _ := cb["name"].(string)
+						if toolName == "mcp__plugin-forge__plugin_forge" && toolID != "" {
+							pushedForgeIDs[toolID] = true
+							select {
+							case session.forgeToolCallIDs <- toolID:
+								log.Printf("[WS] forge tool_call_id pushed early (content_block_start): %s", toolID)
+							default:
+								log.Printf("[WS] forgeToolCallIDs channel full, dropping: %s", toolID)
+							}
+						}
+					}
+				}
 			}
 
 			if innerType == "content_block_delta" {
@@ -745,11 +768,13 @@ sendAndProcess:
 					},
 				}
 					accumulatedToolCalls = append(accumulatedToolCalls, tc)
-					// plugin forge tool_call_id 暫存到 session，供 executePluginForge 使用
+					// content_block_start 已提前 push 的不重複推（fallback：stream 沒有 content_block_start 時由此補推）
 					toolName, _ := blockMap["name"].(string)
-					if toolName == "mcp__plugin-forge__plugin_forge" && toolID != "" {
+					if toolName == "mcp__plugin-forge__plugin_forge" && toolID != "" && !pushedForgeIDs[toolID] {
+						pushedForgeIDs[toolID] = true
 						select {
 						case session.forgeToolCallIDs <- toolID:
+							log.Printf("[WS] forge tool_call_id pushed (assistant fallback): %s", toolID)
 						default:
 							log.Printf("[WS] forgeToolCallIDs channel full, dropping: %s", toolID)
 						}
@@ -1470,26 +1495,10 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 
 	instructions := strings.ReplaceAll(string(pluginTemplate), "{VAULT_SHARED}", sharedDir)
 
-	// 預先推導 pluginDir 名稱給 Sub-Agent（保留 Unicode 字母/數字，加短 hash 防碰撞）
 	cleanDir := sanitizePluginDir(forgeTitle)
 
 	userPromptFull := fmt.Sprintf("插件目錄名稱：plugins/%s/\n用戶需求：%s", cleanDir, userPrompt)
 	workDir := filepath.Join(vaultRoot, memberID)
-
-	// 寫入 CLAUDE.md 讓 CLI 自動讀取為 project-level 指令
-	claudeMDPath := filepath.Join(workDir, "CLAUDE.md")
-	origCLAUDE, readOrigErr := os.ReadFile(claudeMDPath)
-	if writeErr := os.WriteFile(claudeMDPath, []byte(instructions), 0666); writeErr != nil {
-		log.Printf("[PluginForge] failed to write CLAUDE.md: %v", writeErr)
-	}
-	defer func() {
-		if readOrigErr == nil {
-			os.WriteFile(claudeMDPath, origCLAUDE, 0666)
-		} else {
-			os.Remove(claudeMDPath)
-		}
-	}()
-	executor.ChownToMember(claudeMDPath, memberID)
 
 	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_init"})
 
@@ -1497,12 +1506,15 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	defer cancel()
 
 	args := []string{
+		"--bare",
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--model", "claude-opus-4-6",
 		"--dangerously-skip-permissions",
+		"--settings", "/home/mirror/.claude/settings.json",
 		"--mcp-config", "/home/mirror/.claude/settings.json",
+		"--append-system-prompt", instructions,
 		"-p", userPromptFull,
 	}
 
