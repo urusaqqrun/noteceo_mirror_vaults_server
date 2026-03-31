@@ -9,12 +9,21 @@
 
 ## 第二步：完整閱讀範例插件（禁止跳過）
 
-**在寫任何程式碼之前，你必須完整讀完以下兩個內建插件的所有檔案。不是讀一個檔案，是每個插件目錄下的每一個檔案都讀。**
+**在寫任何程式碼之前，你必須用 Read 工具逐一讀取以下兩個內建插件目錄裡的每一個檔案。**
+**不是 ls 列目錄，不是只讀一個檔案，是對每個 .ts / .tsx / .css 檔案都呼叫 Read。**
 
-1. `{VAULT_SHARED}/plugins-src/plugins/note/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案（標準寫法：Plugin / View / Store / Item / CSS 各自獨立）
-2. `{VAULT_SHARED}/plugins-src/plugins/classify/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案（猴子補丁寫法：跨元件注入 UI、Store 補丁）
+操作步驟：
+1. 先 `ls {VAULT_SHARED}/plugins-src/plugins/note/` 取得檔案列表
+2. 對列出的每個 .ts / .tsx / .css 檔案，用 Read 工具讀取完整內容
+3. 再 `ls {VAULT_SHARED}/plugins-src/plugins/classify/` 取得檔案列表
+4. 對列出的每個 .ts / .tsx / .css 檔案，用 Read 工具讀取完整內容
+
+- `note/` — 標準寫法：Plugin / View / Store / Item / CSS 各自獨立
+- `classify/` — 猴子補丁寫法：跨元件注入 UI、Store 補丁
 
 讀完後你就知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、registerPluginClass 怎麼呼叫、跨元件注入怎麼做。照著做就對了。
+
+**禁止讀取用戶 vault 裡的現有插件目錄。** 那些可能是之前失敗的產物，結構是錯的。只能參考上面指定的兩個範例。
 
 ## Plugin 基類 API
 
