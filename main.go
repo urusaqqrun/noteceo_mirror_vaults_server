@@ -94,7 +94,7 @@ func main() {
 	skillHandler := api.NewSkillHandler(vaultFS)
 	skillHandler.RegisterRoutes(mux)
 
-	pluginHandler := api.NewPluginHandler(vaultFS)
+	pluginHandler := api.NewPluginHandler(vaultFS, pgStore, vaultLock, projector)
 	pluginHandler.RegisterRoutes(mux)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

@@ -128,6 +128,13 @@ fi
 # ----------------------------------------
 # 使用 Buildx 構建並推送到 ECR
 # ----------------------------------------
+# 下載最新內建插件原始碼到 build context（Dockerfile COPY 進映像）
+echo "📦 下載最新 plugins-src.tar.gz..."
+curl -fsSL "https://cubelv.com/app/plugins-src.tar.gz" -o plugins-src.tar.gz \
+    && echo "✅ plugins-src.tar.gz 已下載" \
+    || echo "⚠️ plugins-src.tar.gz 下載失敗，將使用空檔案"
+[ -f plugins-src.tar.gz ] || touch plugins-src.tar.gz
+
 echo "=== 構建並推送鏡像到 ECR （linux/amd64）==="
 docker buildx build \
   --platform linux/amd64 \
@@ -220,7 +227,7 @@ else
 fi
 
 # 清理
-rm -f mirror-service-task-definition-updated.json
+rm -f mirror-service-task-definition-updated.json plugins-src.tar.gz
 
 echo "=== 部署完成 ==="
 echo "您可以使用以下命令查看："

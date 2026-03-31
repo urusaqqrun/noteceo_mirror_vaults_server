@@ -2,6 +2,19 @@
 
 你的任務是建立或修改一個 CubeLV 插件。
 
+## 第零步：先確認目標目錄與 codeStem
+
+- 用戶訊息第一行會明確給你目標目錄，例如：`插件目錄名稱：plugins/番茄鐘插件-cd1677/`
+- **必須使用系統提供的目錄名，不得自行改目錄名、另建第二個插件目錄、或把檔案寫到其他名稱的目錄**
+- 在寫任何檔案前，先自行選定一個固定的 **ASCII `codeStem`**
+- `codeStem` 只可使用英文字母、數字、連字號，整個插件都必須固定使用同一個 `codeStem`
+- `codeStem` 用途必須統一：
+  - React 元件 / class 命名：由 `codeStem` 衍生成 PascalCase，例如 `pomodoro` → `PomodoroPlugin.tsx`
+  - 檔名 stem：例如 `pomodoroStore.ts`、`pomodoro.css`
+  - CSS class prefix：例如 `.pomodoro-*`
+  - localStorage key prefix：例如 `plugin:pomodoro:*`
+- **目錄名可以是 Unicode；`codeStem` 必須是 ASCII。不要把兩者混為一談**
+
 ## 第一步：了解共用元件與主題系統
 
 1. **瀏覽 `{VAULT_SHARED}/plugins-src/components/common/`**：了解有哪些現成的共用元件（按鈕、對話框、圖標等），插件 UI 盡量複用這些元件，保持風格一致。
@@ -14,16 +27,49 @@
 
 操作步驟：
 1. 先 `ls {VAULT_SHARED}/plugins-src/plugins/note/` 取得檔案列表
-2. 對列出的每個 .ts / .tsx / .css 檔案，用 Read 工具讀取完整內容
+2. 對列出的每個 `.ts` / `.tsx` / `.css` 檔案，用 Read 工具讀取完整內容
 3. 再 `ls {VAULT_SHARED}/plugins-src/plugins/classify/` 取得檔案列表
-4. 對列出的每個 .ts / .tsx / .css 檔案，用 Read 工具讀取完整內容
+4. 對列出的每個 `.ts` / `.tsx` / `.css` 檔案，用 Read 工具讀取完整內容
 
-- `note/` — 標準寫法：Plugin / View / Store / Item / CSS 各自獨立
-- `classify/` — 猴子補丁寫法：跨元件注入 UI、Store 補丁
+- `note/`：標準寫法，Plugin / View / Store / Item / CSS 各自獨立
+- `classify/`：猴子補丁寫法，跨元件注入 UI、Store 補丁
 
-讀完後你就知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、registerPluginClass 怎麼呼叫、跨元件注入怎麼做。照著做就對了。
+讀完後你應該知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、`registerPluginClass` 怎麼呼叫、跨元件注入怎麼做。
 
 **禁止讀取用戶 vault 裡的現有插件目錄。** 那些可能是之前失敗的產物，結構是錯的。只能參考上面指定的兩個範例。
+
+## 第三步：必讀 runtime 合約（禁止跳過）
+
+**在寫任何程式碼之前，必須用 Read 工具讀取以下檔案完整內容：**
+
+1. `workspace/Plugin.ts`
+2. `workspace/pluginSDK.ts`
+3. `workspace/pluginLoader.ts`
+4. `workspace/pluginRegistry.ts`
+
+這四個檔案是 runtime 真實行為來源，決定：
+- 插件生命週期怎麼清理
+- 動態插件可 import 哪些共享模組
+- bundle / CSS 會怎麼被載入
+- `registerPluginClass` 註冊後怎麼被發現與掛載
+
+**如果你的既有印象、舊範例、或一般 React 習慣與這四個檔案衝突，以這四個檔案為準。**
+
+## 第四步：先判斷主要掛載方式，再開始寫碼
+
+在寫任何檔案前，先根據需求選定**一個主要掛載方式**：
+
+- `registerSidebarSection`：需要在側欄提供主要入口
+- `registerView`：插件擁有自己的 pane / center view
+- `registerOverlay`：插件主要是對話框、選單、浮層
+- `addCommand`：插件主要是指令或快捷鍵觸發
+- `registerWindowView`：插件主要是在獨立視窗開啟
+
+規則：
+- **先選一個主要掛載方式，避免同時亂註冊多種入口當保險**
+- 若需要第二種掛載方式，必須是明確的次要入口，且要有實際觸發來源，不可「先註冊再說」
+- 若插件擁有自己的畫面，通常要搭配清楚的觸發鏈路：sidebar / command / navigation → `ensureMounted()` → `registerView`
+- 若插件是猴子補丁 / 注入型 UI，通常不應搶占 center pane
 
 ## Plugin 基類 API
 
@@ -48,30 +94,137 @@
 | `clearPane(paneId)` | 清空 pane 內所有 leaf |
 | `ensureLeafInPane(paneId, leafId, viewType, sizing)` | 確保 pane 中有指定 leaf（冪等） |
 
+## Workspace 面板結構與觸發鏈路（最重要 — 不做就等於白寫）
+
+### 面板結構
+
+```
+┌─────────┬──────────────┬──────────────┬──────────┐
+│ leftPane│ centerPane1  │ centerPane2  │ rightPane│
+│ (sidebar)│ (列表)       │ (詳情/編輯器) │ (AI 面板) │
+└─────────┴──────────────┴──────────────┴──────────┘
+```
+
+每個插件「接管」center 區域的方式：
+- **雙欄插件**（note, todo, chart）：`centerPane1` 放列表，`centerPane2` 放編輯器/詳情
+- **單欄插件**（card, auto-task）：`clearPane('centerPane1')` 清空列表區，`centerPane2` 放主視圖
+
+### 觸發鏈路
+
+光 `registerView` 不夠，View 不會自己出現。完整流程：
+
+```typescript
+// 1. 註冊 View 類型
+this.registerView('my-list', (leaf) => new MyListView(leaf));
+this.registerView('my-detail', (leaf) => new MyDetailView(leaf));
+
+// 2. 註冊 Sidebar 區塊（讓用戶在側欄看到入口）
+this.registerSidebarSection({
+    id: 'my-plugin',
+    title: '我的插件',
+    orderAt: 600,
+    useData: useMyPluginSidebarData,
+});
+
+// 3. 訂閱導航，自治掛載
+this.register(useSelectedItemsStore.subscribe((state) => {
+    const last = state.path.at(-1);
+    const shouldShow = last?.itemType === 'MY_TYPE';
+    if (shouldShow) this.ensureMounted();
+}));
+
+// 4. ensureMounted 把 View 放進 pane
+private ensureMounted() {
+    this.ensureLeafInPane('centerPane1', 'leaf-mylist', 'my-list', {
+        size: 350, minSize: 240,
+    });
+    this.ensureLeafInPane('centerPane2', 'leaf-mydetail', 'my-detail', {
+        flex: 1, minSize: 360,
+    });
+}
+```
+
+**關鍵邏輯：** 用戶在 sidebar 點擊項目 → `useSelectedItemsStore` 的 `path` 改變 → 你的 subscribe 判斷 `shouldShow` → 呼叫 `ensureMounted()` → centerPane1/centerPane2 替換成你的 View。
+
+**注意：** 以上流程適用於「擁有自己畫面」的插件（note, todo, chart 類型）。猴子補丁類插件（如 classify）不搶 center pane，改用 `MutationObserver` + `createPortal` 注入 UI 到其他插件的 DOM，不需要 `registerSidebarSection` 和 `ensureLeafInPane`。
+
+### 常見錯誤（禁止）
+
+- `registerView` 之後什麼都不做，View 永遠不會顯示
+- 擁有畫面的插件不訂閱 `useSelectedItemsStore`，不知道什麼時候該掛載
+- 寫死 item ID / memberID / folderID / plugin ID
+- `registerOverlay` 但沒有任何按鈕、命令、或入口去觸發它
+- 靜態 CSS 用手動 `<style>` 注入
 
 ## 檔案結構（必須拆分，禁止全部塞進一個檔案）
 
 插件必須拆分為多個檔案，和內建插件完全一樣的結構。**禁止把所有邏輯寫在一個檔案裡。**
 
 拆分原則（照抄內建插件的做法）：
-- **{Name}Plugin.tsx** — 入口檔案，Plugin 子類 + `registerPluginClass`，只做註冊，不放 UI
-- **每個 React 元件一個 .tsx 檔案**（如 `{Name}List.tsx`、`{Name}Item.tsx`）
-- **CSS 獨立 .css 檔案**，不要用 inline style
-- **Store 獨立 .ts 檔案**（如 `{name}Store.ts`，用 Zustand）
+- **{CodeStemPascal}Plugin.tsx**：入口檔案，Plugin 子類 + `registerPluginClass`，只做註冊，不放 UI
+- **每個 React 元件一個 `.tsx` 檔案**：如 `{CodeStemPascal}List.tsx`、`{CodeStemPascal}Panel.tsx`
+- **CSS 獨立 `.css` 檔案**：例如 `{codeStem}.css`，不要用 inline style
+- **Store 獨立 `.ts` 檔案**：例如 `{codeStem}Store.ts`，用 Zustand
 - 檔案命名照內建插件慣例，不要自己發明
+
+## Import 規則（寫錯就編譯失敗）
+
+**所有 CubeLV 核心模組一律從 `@cubelv/sdk` import，禁止用相對路徑。**
+
+範例插件（note/classify）是內建插件，用的是相對路徑（如 `../../../workspace/Plugin`）。你不是內建插件，你是動態插件，esbuild 只認 `@cubelv/sdk` 作為 external，相對路徑直接報 `Could not resolve`。
+
+```typescript
+// 禁止 — 相對路徑，esbuild 編譯必報錯
+import { Plugin } from '../../../workspace/Plugin';
+import { useItemStore } from '../../../Store/itemStore';
+
+// 正確 — 全部從 @cubelv/sdk import
+import {
+    Plugin, ReactView, registerPluginClass,
+    useItemStore, useSelectedItemsStore, generateObjectID,
+} from '@cubelv/sdk';
+import { create } from '@cubelv/sdk';  // zustand create
+```
+
+**只有插件自己目錄內的檔案用相對路徑：**
+```typescript
+import { usePomodoroStore } from './pomodoroStore';
+import PomodoroTimer from './PomodoroTimer';
+import './pomodoro.css';
+```
 
 ## 寫入規則
 
-- 所有檔案寫在 `plugins/{pluginName}/`
-- `pluginName` 英文小寫 + 連字號
-- `{Name}Plugin.tsx` 末尾必須呼叫 `registerPluginClass(MyPlugin, '名稱')`
-- CSS class 用插件名稱前綴（如 `.pomodoro-timer`）
+- 所有檔案寫在**系統提供的目標目錄**內
+- 不得改動、重命名、搬移系統提供的插件目錄
+- 元件名、檔名 stem、CSS prefix、localStorage key 一律使用同一個 `codeStem`
+- 入口檔案末尾必須呼叫 `registerPluginClass(MyPlugin, '名稱')`
+- 一般樣式一律使用 `import './x.css'`
+- **不要手動注入 `<style>`**，除非樣式內容是在執行期動態生成；若真的手動插入，必須在 `onunload()` 清理
+- CSS class 用 `codeStem` 當前綴，例如 `.pomodoro-timer`
 - `.map()` 渲染的 JSX 必須有 `key`
-- `onunload()` 清理 `onload()` 插入的 DOM（如 `<style>`）
+- **禁止硬編碼任何 24 位 hex 字串**
+- **禁止硬編碼 memberID、folderID、plugin ID**
+- **禁止多餘 `import React from 'react'`**（本環境使用 `jsx: 'automatic'`）
+- **禁止 banner 註解**（例如 `// ===== xxx =====`）
 - **禁止使用 emoji**：所有文字、標題、按鈕、log 一律不准出現 emoji 字元
 - **禁止在 `plugins/` 以外寫入**
 
+## 完成前自檢（必做）
+
+在停止前，必須自行檢查以下項目全部成立：
+
+- `registerPluginClass(...)` 已存在於入口檔
+- 所有核心 import 都來自 `@cubelv/sdk`，沒有 `../../../` 相對路徑
+- 沒有 `main.tsx`
+- 沒有任何 24 位 hex literal
+- 沒有 `import React from 'react'`
+- 沒有 `// =====` 這類 banner 註解
+- 靜態 CSS 都是透過 `import './x.css'`
+- 只寫入系統指定的插件目錄
+- 掛載方式有且只有一個主要入口，次要入口都有明確觸發來源
+
 ## 安全限制
 
-1. 只能在 `plugins/{pluginName}/` 寫入
+1. 只能在系統指定的插件目錄內寫入
 2. Bash 只用絕對路徑
