@@ -19,13 +19,17 @@ if [ "$STOP_ACTIVE" = "true" ]; then
   exit 0
 fi
 
-# plugin scope：檢查 main.tsx 入口是否存在
+# plugin scope：檢查入口檔是否存在（*Plugin.tsx 或 main.tsx）
 if [ "$TASK_SCOPE" = "plugin" ]; then
   ERRORS=""
   while IFS= read -r plugin_dir; do
-    if [ ! -f "$plugin_dir/main.tsx" ]; then
+    entry_found=false
+    for f in "$plugin_dir"/*Plugin.tsx; do
+      [ -f "$f" ] && entry_found=true && break
+    done
+    if [ "$entry_found" = false ] && [ ! -f "$plugin_dir/main.tsx" ]; then
       REL=$(echo "$plugin_dir" | sed "s|$CWD/||")
-      append_error "${REL} 缺少 main.tsx 入口檔案"
+      append_error "${REL} 缺少入口檔案（需要 *Plugin.tsx 或 main.tsx）"
     fi
   done < <(find "$CWD/plugins" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
 

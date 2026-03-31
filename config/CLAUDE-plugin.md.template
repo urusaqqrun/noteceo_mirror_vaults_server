@@ -11,8 +11,9 @@
 
 **在寫任何程式碼之前，你必須完整讀完以下兩個內建插件的所有檔案。不是讀一個檔案，是每個插件目錄下的每一個檔案都讀。**
 
-1. `{VAULT_SHARED}/plugins-src/plugins/note/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
-2. `{VAULT_SHARED}/plugins-src/plugins/classify/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
+1. `{VAULT_SHARED}/plugins-src/plugins/todo/` — 完整讀目錄下所有檔案（檔案結構最佳範例：Plugin / View / Store / Item / CSS 各自獨立）
+2. `{VAULT_SHARED}/plugins-src/plugins/note/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
+3. `{VAULT_SHARED}/plugins-src/plugins/classify/` — 完整讀目錄下所有 `.ts`、`.tsx`、`.css` 檔案
 
 讀完後你就知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、registerPluginClass 怎麼呼叫。照著做就對了。
 
@@ -40,11 +41,22 @@
 | `ensureLeafInPane(paneId, leafId, viewType, sizing)` | 確保 pane 中有指定 leaf（冪等） |
 
 
+## 檔案結構（必須拆分，禁止全部塞進一個檔案）
+
+插件必須拆分為多個檔案，和內建插件完全一樣的結構。**禁止把所有邏輯寫在一個檔案裡。**
+
+拆分原則（照抄內建插件的做法）：
+- **{Name}Plugin.tsx** — 入口檔案，Plugin 子類 + `registerPluginClass`，只做註冊，不放 UI
+- **每個 React 元件一個 .tsx 檔案**（如 `{Name}List.tsx`、`{Name}Item.tsx`）
+- **CSS 獨立 .css 檔案**，不要用 inline style
+- **Store 獨立 .ts 檔案**（如 `{name}Store.ts`，用 Zustand）
+- 檔案命名照內建插件慣例，不要自己發明
+
 ## 寫入規則
 
-- 所有檔案寫在 `plugins/{pluginName}/`，入口 `main.tsx`
+- 所有檔案寫在 `plugins/{pluginName}/`
 - `pluginName` 英文小寫 + 連字號
-- 檔案末尾必須呼叫 `registerPluginClass(MyPlugin, '名稱')`
+- `{Name}Plugin.tsx` 末尾必須呼叫 `registerPluginClass(MyPlugin, '名稱')`
 - CSS class 用插件名稱前綴（如 `.pomodoro-timer`）
 - `.map()` 渲染的 JSX 必須有 `key`
 - `onunload()` 清理 `onload()` 插入的 DOM（如 `<style>`）

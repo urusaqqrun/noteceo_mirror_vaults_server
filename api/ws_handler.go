@@ -1385,6 +1385,28 @@ func (h *WsHandler) handleInterrupt(session *WsSession) {
 	})
 }
 
+// findPluginEntry 在插件目錄下找入口檔（*Plugin.tsx），找不到回退到 main.tsx
+func findPluginEntry(vaultFS mirror.VaultFS, pluginRoot string) string {
+	entries, err := vaultFS.ListDir(pluginRoot)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, "Plugin.tsx") {
+			return name
+		}
+	}
+	// 回退：相容舊的 main.tsx
+	if vaultFS.Exists(filepath.Join(pluginRoot, "main.tsx")) {
+		return "main.tsx"
+	}
+	return ""
+}
+
 // sanitizePluginDir 將 forgeTitle 轉換為安全的目錄名稱
 // 保留 Unicode 字母/數字（支援中日韓等文字），空格轉連字號，加短 hash 防碰撞
 func sanitizePluginDir(title string) string {
@@ -1567,15 +1589,16 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	// 使用先前推導的 pluginDir
 	pluginDir := cleanDir
 
-	// 找到實際的 plugin 目錄
-	mainTsxPath := filepath.Join(memberID, "plugins", pluginDir, "main.tsx")
-	if !h.vaultFS.Exists(mainTsxPath) {
+	// 找到實際的 plugin 目錄和入口檔（*Plugin.tsx）
+	entryFile := findPluginEntry(h.vaultFS, filepath.Join(memberID, "plugins", pluginDir))
+	if entryFile == "" {
 		pluginsPath := filepath.Join(memberID, "plugins")
 		entries, _ := h.vaultFS.ListDir(pluginsPath)
 		for _, e := range entries {
 			if e.IsDir() {
-				if h.vaultFS.Exists(filepath.Join(memberID, "plugins", e.Name(), "main.tsx")) {
+				if ef := findPluginEntry(h.vaultFS, filepath.Join(memberID, "plugins", e.Name())); ef != "" {
 					pluginDir = e.Name()
+					entryFile = ef
 					break
 				}
 			}
@@ -1599,7 +1622,7 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	}
 
 	// esbuild 打包（只 external 共享模組，第三方庫打包進 bundle）
-	entryPath := filepath.Join(workDir, "plugins", pluginDir, "main.tsx")
+	entryPath := filepath.Join(pluginAbsDir, entryFile)
 	bundlePath := filepath.Join(workDir, "plugins", pluginDir, "bundle.js")
 	esbuildCmd := exec.CommandContext(ctx, "node", "/app/config/esbuild-plugin-bundle.mjs",
 		entryPath, bundlePath)
