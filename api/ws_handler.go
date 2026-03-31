@@ -1669,6 +1669,37 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	userPromptFull := fmt.Sprintf("插件目錄名稱：plugins/%s/\n用戶需求：%s", cleanDir, userPrompt)
 	workDir := filepath.Join(vaultRoot, memberID)
 
+	// 清理舊的失敗插件目錄（有 main.tsx 但沒有 *Plugin.tsx 且沒有 bundle.js 的目錄）
+	pluginsRoot := filepath.Join(workDir, "plugins")
+	if dirEntries, err := os.ReadDir(pluginsRoot); err == nil {
+		for _, de := range dirEntries {
+			if !de.IsDir() {
+				continue
+			}
+			subDir := filepath.Join(pluginsRoot, de.Name())
+			files, _ := os.ReadDir(subDir)
+			hasPluginTsx := false
+			hasBundleJS := false
+			hasMainTsx := false
+			for _, f := range files {
+				name := f.Name()
+				if strings.HasSuffix(name, "Plugin.tsx") {
+					hasPluginTsx = true
+				}
+				if name == "bundle.js" {
+					hasBundleJS = true
+				}
+				if name == "main.tsx" {
+					hasMainTsx = true
+				}
+			}
+			if hasMainTsx && !hasPluginTsx && !hasBundleJS {
+				log.Printf("[PluginForge] cleanup stale dir: %s", de.Name())
+				os.RemoveAll(subDir)
+			}
+		}
+	}
+
 	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_init"})
 
 	ctx, cancel := context.WithTimeout(baseCtx, 10*time.Minute)
@@ -1678,15 +1709,13 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	}
 
 	args := []string{
-		"--bare",
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--model", "claude-opus-4-6",
 		"--dangerously-skip-permissions",
-		"--settings", "/home/mirror/.claude/settings.json",
 		"--mcp-config", "/home/mirror/.claude/settings.json",
-		"--append-system-prompt", instructions,
+		"--system-prompt", instructions,
 		"-p", userPromptFull,
 	}
 
