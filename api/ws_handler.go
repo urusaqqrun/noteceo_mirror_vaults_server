@@ -1642,8 +1642,8 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		}
 	}
 
-	// forge 使用獨立 context：WS 斷線不會取消，只有使用者明確中斷或 15 分鐘超時才會取消
-	forgeCtx, forgeCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	// forge 使用獨立 context：WS 斷線不會取消，只有使用者明確中斷才會取消（無 timeout）
+	forgeCtx, forgeCancel := context.WithCancel(context.Background())
 	defer forgeCancel()
 
 	var forgeOp *sessionOperation
@@ -1655,30 +1655,20 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	}
 
 	cancelledResult := func() map[string]interface{} {
-		reason := "已中斷"
-		if errors.Is(forgeCtx.Err(), context.DeadlineExceeded) {
-			reason = "forge timeout (15 min)"
-			log.Printf("[PluginForge] ⚠ forge 超過 15 分鐘 timeout，被強制結束")
-		} else {
-			log.Printf("[PluginForge] forge 被使用者中斷")
-		}
+		log.Printf("[PluginForge] forge 被使用者中斷")
 		sendWS(map[string]interface{}{
 			"type":    "sub_agent_complete",
 			"status":  "cancelled",
-			"message": reason,
+			"message": "已中斷",
 		})
 		return map[string]interface{}{
 			"status":  "cancelled",
-			"message": reason,
+			"message": "已中斷",
 		}
 	}
 
 	checkForgeContext := func() map[string]interface{} {
-		err := forgeCtx.Err()
-		if err == nil {
-			return nil
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(forgeCtx.Err(), context.Canceled) {
 			return cancelledResult()
 		}
 		return nil
@@ -1905,28 +1895,13 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	}
 	log.Printf("[PluginForge] === SUB-AGENT STREAM END === total events=%d", eventCount)
 
-	subAgentErr := cmd.Wait()
-	isTimeout := errors.Is(forgeCtx.Err(), context.DeadlineExceeded)
-	isCancelled := errors.Is(forgeCtx.Err(), context.Canceled) && !isTimeout
-
-	if isCancelled {
-		return cancelledResult()
-	}
-
-	if subAgentErr != nil && !isTimeout {
-		log.Printf("[PluginForge] sub-agent exited with error: %v", subAgentErr)
-		sendWS(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": subAgentErr.Error()})
-		return map[string]interface{}{"status": "error", "error": subAgentErr.Error()}
-	}
-
-	// timeout 時不立即放棄：檢查源碼是否已完整，若完整則繼續 esbuild
-	if isTimeout {
-		hasEntry := findPluginEntry(h.vaultFS, filepath.Join(memberID, "plugins", cleanDir)) != ""
-		if !hasEntry {
-			log.Printf("[PluginForge] timeout 且源碼不完整，放棄")
+	if waitErr := cmd.Wait(); waitErr != nil {
+		if errors.Is(forgeCtx.Err(), context.Canceled) {
 			return cancelledResult()
 		}
-		log.Printf("[PluginForge] timeout 但源碼已完整，繼續 esbuild")
+		log.Printf("[PluginForge] sub-agent exited with error: %v", waitErr)
+		sendWS(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": waitErr.Error()})
+		return map[string]interface{}{"status": "error", "error": waitErr.Error()}
 	}
 
 	// 使用先前推導的 pluginDir
@@ -1964,21 +1939,11 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 
 	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_compile"})
 
-	// timeout 後 forgeCtx 已 cancelled，建立新 context 給 npm install + esbuild
-	buildCtx := forgeCtx
-	var buildCancel context.CancelFunc
-	if isTimeout {
-		buildCtx, buildCancel = context.WithTimeout(context.Background(), 2*time.Minute)
-	} else {
-		buildCtx, buildCancel = context.WithCancel(forgeCtx)
-	}
-	defer buildCancel()
-
 	// 如果插件目錄有 package.json，先安裝第三方依賴
 	pluginAbsDir := filepath.Join(workDir, "plugins", pluginDir)
 	pkgJSONPath := filepath.Join(pluginAbsDir, "package.json")
 	if _, statErr := os.Stat(pkgJSONPath); statErr == nil {
-		npmCmd := exec.CommandContext(buildCtx, "npm", "install", "--production", "--no-audit", "--no-fund")
+		npmCmd := exec.CommandContext(forgeCtx, "npm", "install", "--production", "--no-audit", "--no-fund")
 		npmCmd.Dir = pluginAbsDir
 		npmOut, npmErr := npmCmd.CombinedOutput()
 		if npmErr != nil {
@@ -1991,11 +1956,11 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	// esbuild 打包（只 external 共享模組，第三方庫打包進 bundle）
 	entryPath := filepath.Join(pluginAbsDir, entryFile)
 	bundlePath := filepath.Join(workDir, "plugins", pluginDir, "bundle.js")
-	esbuildCmd := exec.CommandContext(buildCtx, "node", "/app/config/esbuild-plugin-bundle.mjs",
+	esbuildCmd := exec.CommandContext(forgeCtx, "node", "/app/config/esbuild-plugin-bundle.mjs",
 		entryPath, bundlePath)
 	esbuildOut, esbuildErr := esbuildCmd.CombinedOutput()
 	if esbuildErr != nil {
-		if errors.Is(buildCtx.Err(), context.Canceled) || errors.Is(buildCtx.Err(), context.DeadlineExceeded) {
+		if errors.Is(forgeCtx.Err(), context.Canceled) {
 			return cancelledResult()
 		}
 		errMsg := fmt.Sprintf("esbuild 編譯失敗: %s", string(esbuildOut))
