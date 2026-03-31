@@ -22,6 +22,7 @@ func NewPluginHandler(vaultFS mirror.VaultFS) *PluginHandler {
 
 func (h *PluginHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/vault/plugin/bundle", h.HandleBundleDownload)
+	mux.HandleFunc("/api/vault/plugin/css", h.HandleCSSDownload)
 	mux.HandleFunc("/api/vault/plugin/source", h.HandleSourceDownload)
 }
 
@@ -57,6 +58,40 @@ func (h *PluginHandler) HandleBundleDownload(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(data)
+}
+
+// HandleCSSDownload serves a plugin's bundle.css file (if exists).
+// GET /api/vault/plugin/css?memberID=xxx&plugin=pomodoro
+func (h *PluginHandler) HandleCSSDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+
+	memberID := r.URL.Query().Get("memberID")
+	pluginDir := r.URL.Query().Get("plugin")
+
+	if memberID == "" || pluginDir == "" {
+		http.Error(w, "missing memberID or plugin parameter", http.StatusBadRequest)
+		return
+	}
+
+	pluginDir = filepath.Base(pluginDir)
+	if pluginDir == "." || pluginDir == ".." || strings.Contains(pluginDir, "/") {
+		http.Error(w, "invalid plugin name", http.StatusBadRequest)
+		return
+	}
+
+	cssPath := filepath.Join(memberID, "plugins", pluginDir, "bundle.css")
+	data, err := h.vaultFS.ReadFile(cssPath)
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(data)
 }
