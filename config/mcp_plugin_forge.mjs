@@ -44,6 +44,8 @@ async function forgePlugin(args) {
   const result = await res.json();
   if (result.status === 'success') {
     return `插件「${result.title}」已建立並編譯成功。\n插件目錄：plugins/${result.pluginDir}\nbundleHash：${result.bundleHash}\n用戶刷新後即可使用。`;
+  } else if (result.status === 'cancelled') {
+    return '插件鍛造已中斷。';
   } else {
     return `插件鍛造失敗：${result.error || '未知錯誤'}`;
   }
