@@ -1401,10 +1401,6 @@ func findPluginEntry(vaultFS mirror.VaultFS, pluginRoot string) string {
 			return name
 		}
 	}
-	// 回退：相容舊的 main.tsx
-	if vaultFS.Exists(filepath.Join(pluginRoot, "main.tsx")) {
-		return "main.tsx"
-	}
 	return ""
 }
 
