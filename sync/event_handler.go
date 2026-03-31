@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -165,6 +167,7 @@ func (h *SyncEventHandler) handleItemEvent(ctx context.Context, event SyncEvent)
 }
 
 // deleteItemByDocID 刪除 item 對應的 .json 與同名子目錄。
+// 若為 PLUGIN item，額外清理 plugins/{pluginDir}/ 目錄。
 func (h *SyncEventHandler) deleteItemByDocID(ctx context.Context, userID, docID string) error {
 	target, _, err := h.findPathByDocID(ctx, userID, docID)
 	if err != nil {
@@ -173,7 +176,20 @@ func (h *SyncEventHandler) deleteItemByDocID(ctx context.Context, userID, docID 
 	if target == "" {
 		return nil
 	}
+
+	// PLUGIN item：刪除前讀取 pluginDir，之後清理 plugins/ 下的原始碼
+	var pluginDirToClean string
 	if h.fs.Exists(target) {
+		if data, readErr := h.fs.ReadFile(target); readErr == nil {
+			var obj map[string]interface{}
+			if json.Unmarshal(data, &obj) == nil {
+				if itemType, _ := obj["itemType"].(string); itemType == "PLUGIN" {
+					if pd, _ := obj["pluginDir"].(string); pd != "" {
+						pluginDirToClean = filepath.Join(userID, "plugins", pd)
+					}
+				}
+			}
+		}
 		if err := h.fs.Remove(target); err != nil {
 			return err
 		}
@@ -182,6 +198,13 @@ func (h *SyncEventHandler) deleteItemByDocID(ctx context.Context, userID, docID 
 	if dirPath != target && h.fs.Exists(dirPath) {
 		if err := h.fs.RemoveAll(dirPath); err != nil {
 			return err
+		}
+	}
+	if pluginDirToClean != "" && h.fs.Exists(pluginDirToClean) {
+		if err := h.fs.RemoveAll(pluginDirToClean); err != nil {
+			log.Printf("[SyncEventHandler] failed to clean plugin dir %s: %v", pluginDirToClean, err)
+		} else {
+			log.Printf("[SyncEventHandler] cleaned plugin dir: %s", pluginDirToClean)
 		}
 	}
 	h.InvalidateResolver(userID)
