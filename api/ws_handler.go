@@ -441,10 +441,12 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 	handleStart := time.Now()
 	log.Printf("[CacheProfile] handleMessage START — member=%s session=%s", session.memberID, session.sessionID)
 
-	// ★ 確保 session mapping 存在（用空 title，之後 AI 生成標題時會更新）
+	// 確保 session mapping 存在（用空 title，之後 AI 生成標題時會更新）
 	// 這樣前端 syncSessions 就能看到這個 session，不會誤刪
 	if err := h.chatStore.AddSessionMapping(context.Background(), session.memberID, session.sessionID, "", session.mode); err != nil {
 		log.Printf("[SessionMapping] EnsureMapping FAILED — sessionID=%s, err=%v", session.sessionID, err)
+	} else {
+		log.Printf("[SessionMapping] EnsureMapping OK — sessionID=%s, member=%s", session.sessionID, session.memberID)
 	}
 
 	if err := h.checkCredits(session.memberID); err != nil {
