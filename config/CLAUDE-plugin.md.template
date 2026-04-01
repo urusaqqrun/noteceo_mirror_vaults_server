@@ -16,45 +16,28 @@
   - localStorage key prefix：例如 `plugin:pomodoro:*`
 - **目錄名可以是 Unicode；`codeStem` 必須是 ASCII。不要把兩者混為一談**
 
-## 第一步：了解共用元件與主題系統
+## 第一步：了解現有插件生態
 
-1. **瀏覽 `{VAULT_SHARED}/plugins-src/components/common/`**：了解有哪些現成的共用元件（按鈕、對話框、圖標等），插件 UI 盡量複用這些元件，保持風格一致。
-2. **閱讀 `{VAULT_SHARED}/plugins-src/components/setting/ThemeProvider.tsx`**：了解主題系統的 CSS 變數命名規則。插件的顏色、背景、文字色等**必須使用 ThemeProvider 定義的 CSS 變數**（如 `var(--bg-primary)`、`var(--text-normal)`、`var(--accent-color)` 等），禁止寫死色碼，確保深色/淺色主題都能正常顯示。
+**Read `{VAULT_SHARED}/plugins-src/PLUGINS_INDEX.md`**
 
-## 第二步：完整閱讀範例插件（禁止跳過）
+這份索引是部署時自動從原始碼生成的，列出所有內建插件的名稱、功能、依賴、每個檔案的說明。讀完後你應該知道系統裡有哪些插件、各自做什麼。
 
-**在寫任何程式碼之前，你必須用 Read 工具逐一讀取以下兩個內建插件目錄裡的每一個檔案。**
-**不是 ls 列目錄，不是只讀一個檔案，是對每個 .ts / .tsx / .css 檔案都呼叫 Read。**
+## 第二步：判斷插件類型並讀取對應參考
 
-操作步驟：
-1. 先 `ls {VAULT_SHARED}/plugins-src/plugins/note/` 取得檔案列表
-2. 對列出的每個 `.ts` / `.tsx` / `.css` 檔案，用 Read 工具讀取完整內容
-3. 再 `ls {VAULT_SHARED}/plugins-src/plugins/classify/` 取得檔案列表
-4. 對列出的每個 `.ts` / `.tsx` / `.css` 檔案，用 Read 工具讀取完整內容
+根據用戶需求判斷要做的是哪種類型，讀取對應的參考文件：
 
-- `note/`：標準寫法，Plugin / View / Store / Item / CSS 各自獨立
-- `classify/`：猴子補丁寫法，跨元件注入 UI、Store 補丁
+- **新增獨立功能**（有自己的 sidebar + view + store）→ Read `{VAULT_SHARED}/plugins-src/REFERENCE_STANDALONE.md`
+- **加強/擴展現有功能**（猴子補丁、注入 UI）→ Read `{VAULT_SHARED}/plugins-src/REFERENCE_PATCH.md`
+- 兩者兼具 → 兩份都讀
 
-讀完後你應該知道：Plugin 怎麼寫、View 怎麼寫、Store 怎麼寫、CSS 怎麼寫、`registerPluginClass` 怎麼呼叫、跨元件注入怎麼做。
+參考文件包含：完整 Plugin API 簽名、CSS 變數列表、完整最小範例、交付 Checklist。
 
-**禁止讀取用戶 vault 裡的現有插件目錄。** 那些可能是之前失敗的產物，結構是錯的。只能參考上面指定的兩個範例。
+## 第三步：按需查找細節（可選）
 
-## 第三步：必讀 runtime 合約（禁止跳過）
+如果參考文件不夠，根據 PLUGINS_INDEX.md 中的檔案說明，自行決定讀取哪個內建插件的原始碼。
+大多數情況下不需要這步。
 
-**在寫任何程式碼之前，必須用 Read 工具讀取以下檔案完整內容：**
-
-1. `workspace/Plugin.ts`
-2. `workspace/pluginSDK.ts`
-3. `workspace/pluginLoader.ts`
-4. `workspace/pluginRegistry.ts`
-
-這四個檔案是 runtime 真實行為來源，決定：
-- 插件生命週期怎麼清理
-- 動態插件可 import 哪些共享模組
-- bundle / CSS 會怎麼被載入
-- `registerPluginClass` 註冊後怎麼被發現與掛載
-
-**如果你的既有印象、舊範例、或一般 React 習慣與這四個檔案衝突，以這四個檔案為準。**
+**禁止讀取用戶 vault 裡的現有插件目錄。** 那些可能是之前失敗的產物。
 
 ## 第四步：先判斷主要掛載方式，再開始寫碼
 
