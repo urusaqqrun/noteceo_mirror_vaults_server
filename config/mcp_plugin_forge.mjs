@@ -26,29 +26,51 @@ async function forgePlugin(args) {
   const { title, prompt } = args;
   if (!title || !prompt) return '錯誤：title 和 prompt 為必填';
 
-  // 從環境變數取得當前 session 資訊
   const memberID = process.env.VAULT_USER_ID || '';
   const wsSessionID = process.env.WS_SESSION_ID || '';
 
-  const res = await fetch(`${MIRROR_SERVICE_URL}/api/internal/forge`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, prompt, memberID, wsSessionID }),
+  // forge 禁止 timeout — 用 http.request 手動發 POST，socket timeout 設為 0（永不超時）
+  const http = await import('http');
+  const url = new URL(`${MIRROR_SERVICE_URL}/api/internal/forge`);
+  const postData = JSON.stringify({ title, prompt, memberID, wsSessionID });
+
+  const result = await new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+      timeout: 0,  // 禁止 timeout
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          resolve(`插件鍛造失敗 (HTTP ${res.statusCode}): ${body}`);
+          return;
+        }
+        try {
+          const json = JSON.parse(body);
+          if (json.status === 'success') {
+            resolve(`插件「${json.title}」已建立並編譯成功。\n插件目錄：plugins/${json.pluginDir}\nbundleHash：${json.bundleHash}\n用戶刷新後即可使用。`);
+          } else if (json.status === 'cancelled') {
+            resolve('插件鍛造已中斷。');
+          } else {
+            resolve(`插件鍛造失敗：${json.error || '未知錯誤'}`);
+          }
+        } catch (e) {
+          resolve(`插件鍛造回應解析失敗: ${body.substring(0, 200)}`);
+        }
+      });
+    });
+    req.on('error', (e) => resolve(`插件鍛造連線失敗: ${e.message}`));
+    req.setTimeout(0);  // 確保 socket 也不 timeout
+    req.write(postData);
+    req.end();
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    return `插件鍛造失敗 (HTTP ${res.status}): ${errText}`;
-  }
-
-  const result = await res.json();
-  if (result.status === 'success') {
-    return `插件「${result.title}」已建立並編譯成功。\n插件目錄：plugins/${result.pluginDir}\nbundleHash：${result.bundleHash}\n用戶刷新後即可使用。`;
-  } else if (result.status === 'cancelled') {
-    return '插件鍛造已中斷。';
-  } else {
-    return `插件鍛造失敗：${result.error || '未知錯誤'}`;
-  }
+  return result;
 }
 
 // --- MCP JSON-RPC over stdio ---
