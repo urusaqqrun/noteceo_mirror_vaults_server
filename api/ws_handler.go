@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -229,6 +232,14 @@ func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 // HandleForgeAPI 接收來自 MCP plugin-forge 的插件鍛造請求
 // 啟動 Sub-Agent，透過 WebSocket 串流意圖事件，完成後回傳 JSON 結果
 func (h *WsHandler) HandleForgeAPI(w http.ResponseWriter, r *http.Request) {
+	// Internal Secret 認證
+	secret := r.Header.Get("X-Internal-Secret")
+	expected := os.Getenv("INTERNAL_SECRET")
+	if expected == "" || secret != expected {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	var req struct {
 		Title       string `json:"title"`
 		Prompt      string `json:"prompt"`
@@ -239,46 +250,43 @@ func (h *WsHandler) HandleForgeAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Title == "" || req.Prompt == "" || req.MemberID == "" {
-		http.Error(w, "title, prompt, memberID required", http.StatusBadRequest)
+	if req.Title == "" || req.Prompt == "" || req.MemberID == "" || req.WsSessionID == "" {
+		http.Error(w, "title, prompt, memberID, wsSessionID required", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("[ForgeAPI] received forge request: title=%q member=%s wsSession=%s", req.Title, req.MemberID, req.WsSessionID)
+	log.Printf("[ForgeAPI] received forge request: title=%q member=%s session=%s", req.Title, req.MemberID, req.WsSessionID)
 
-	// 精確查找 WebSocket session（優先用 wsSessionID，fallback 用 memberID）
-	var session *WsSession
-	if req.WsSessionID != "" {
-		sessionKey := req.MemberID + ":" + req.WsSessionID
-		if val, ok := h.sessions.Load(sessionKey); ok {
-			session = val.(*WsSession)
-			log.Printf("[ForgeAPI] found session by exact key: %s", sessionKey)
-		}
+	// 精確匹配 WebSocket session
+	sessionKey := req.MemberID + ":" + req.WsSessionID
+	val, ok := h.sessions.Load(sessionKey)
+	if !ok {
+		log.Printf("[ForgeAPI] session %s not found", sessionKey)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
 	}
-	if session == nil {
-		h.sessions.Range(func(key, value interface{}) bool {
-			if s, ok := value.(*WsSession); ok && s.memberID == req.MemberID {
-				session = s
-				return false
-			}
-			return true
-		})
-		if session != nil {
-			log.Printf("[ForgeAPI] found session by memberID fallback: %s", req.MemberID)
-		} else {
-			log.Printf("[ForgeAPI] no active WebSocket session for member %s", req.MemberID)
-		}
-	}
+	session := val.(*WsSession)
+	log.Printf("[ForgeAPI] found WebSocket session: %s", sessionKey)
 
-	// 從 session 取出對應的 tool_call_id
+	// 阻塞等待 tool_call_id（主串流 tool_use 事件須先到）
 	var toolCallID string
-	if session != nil {
-		select {
-		case toolCallID = <-session.forgeToolCallIDs:
-			log.Printf("[ForgeAPI] got tool_call_id: %s", toolCallID)
-		default:
-			log.Printf("[ForgeAPI] no tool_call_id available in queue")
+	select {
+	case toolCallID = <-session.forgeToolCallIDs:
+		log.Printf("[ForgeAPI] got tool_call_id: %s", toolCallID)
+	case <-time.After(5 * time.Second):
+		log.Printf("[ForgeAPI] tool_call_id timeout")
+		http.Error(w, "tool_call_id not received in time", http.StatusGatewayTimeout)
+		return
+	}
+
+	// Credit check
+	if err := h.checkCredits(req.MemberID); err != nil {
+		if strings.Contains(err.Error(), "INSUFFICIENT_CREDITS") {
+			http.Error(w, err.Error(), http.StatusPaymentRequired)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
+		return
 	}
 
 	// 執行插件鍛造（同步，阻塞到完成）
@@ -1592,7 +1600,8 @@ func findPluginEntry(vaultFS mirror.VaultFS, pluginRoot string) string {
 func sanitizePluginDir(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return fmt.Sprintf("plugin-%x", sha256.Sum256([]byte(fmt.Sprint(time.Now().UnixNano()))))[:14]
+		h := sha256.Sum256([]byte(fmt.Sprint(time.Now().UnixNano())))
+		return fmt.Sprintf("plugin-%x", h[:7])
 	}
 
 	var buf strings.Builder
@@ -1954,6 +1963,11 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	if _, statErr := os.Stat(pkgJSONPath); statErr == nil {
 		npmCmd := exec.CommandContext(forgeCtx, "npm", "install", "--production", "--no-audit", "--no-fund")
 		npmCmd.Dir = pluginAbsDir
+		if uid, gid, ok := executor.MemberCredentialsIfAvailable(memberID); ok {
+			npmCmd.SysProcAttr = &syscall.SysProcAttr{
+				Credential: &syscall.Credential{Uid: uid, Gid: gid},
+			}
+		}
 		npmOut, npmErr := npmCmd.CombinedOutput()
 		if npmErr != nil {
 			log.Printf("[PluginForge] npm install failed: %s", string(npmOut))
@@ -1967,6 +1981,11 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	bundlePath := filepath.Join(workDir, "plugins", pluginDir, "bundle.js")
 	esbuildCmd := exec.CommandContext(forgeCtx, "node", "/app/config/esbuild-plugin-bundle.mjs",
 		entryPath, bundlePath)
+	if uid, gid, ok := executor.MemberCredentialsIfAvailable(memberID); ok {
+		esbuildCmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{Uid: uid, Gid: gid},
+		}
+	}
 	esbuildOut, esbuildErr := esbuildCmd.CombinedOutput()
 	if esbuildErr != nil {
 		if errors.Is(forgeCtx.Err(), context.Canceled) {
@@ -1991,10 +2010,14 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_register"})
 
 	// 寫入 PLUGIN item（vault JSON + PG）
-	pluginID := fmt.Sprintf("%x%012x", time.Now().UnixNano()&0xFFFFFFFF, time.Now().UnixNano()>>32)
-	if len(pluginID) > 24 {
-		pluginID = pluginID[:24]
+	idBytes := make([]byte, 12)
+	if _, err := cryptorand.Read(idBytes); err != nil {
+		errMsg := "failed to generate plugin ID"
+		log.Printf("[PluginForge] %s: %v", errMsg, err)
+		sendWS(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": errMsg})
+		return map[string]interface{}{"status": "error", "error": errMsg}
 	}
+	pluginID := hex.EncodeToString(idBytes)
 	pluginDoc := executor.Doc{
 		"_id": pluginID, "itemType": "PLUGIN", "name": forgeTitle,
 		"fields": map[string]interface{}{
@@ -2004,10 +2027,12 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		},
 	}
 	if upsertErr := h.itemWriter.UpsertItem(context.Background(), memberID, pluginDoc); upsertErr != nil {
-		log.Printf("[PluginForge] failed to write PLUGIN item: %v", upsertErr)
-	} else {
-		log.Printf("[PluginForge] PLUGIN item written: id=%s dir=%s hash=%s", pluginID, pluginDir, bundleHash)
+		errMsg := fmt.Sprintf("寫入 PLUGIN item 失敗: %v", upsertErr)
+		log.Printf("[PluginForge] %s", errMsg)
+		sendWS(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": errMsg})
+		return map[string]interface{}{"status": "error", "error": errMsg}
 	}
+	log.Printf("[PluginForge] PLUGIN item written: id=%s dir=%s hash=%s", pluginID, pluginDir, bundleHash)
 
 	// 同時寫 PLUGIN JSON 到 vault 讓 AI 可管理
 	pluginJSON, _ := json.MarshalIndent(map[string]interface{}{

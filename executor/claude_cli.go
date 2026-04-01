@@ -175,6 +175,15 @@ func EnsureVaultPermissions(workDir string, uid, gid uint32) {
 		workDir, uid, count, time.Since(start).Milliseconds())
 }
 
+// MemberCredentialsIfAvailable 回傳 member UID/GID（僅在 UID 隔離可用時）
+func MemberCredentialsIfAvailable(memberID string) (uid, gid uint32, ok bool) {
+	if !uidIsolationAvailable {
+		return 0, 0, false
+	}
+	u, g := MemberCredentials(memberID)
+	return u, g, true
+}
+
 // ChownToMember 將指定路徑的 owner 設為 member UID（用於 Go 服務寫入 vault 後）
 func ChownToMember(fullPath, memberID string) {
 	if !uidIsolationAvailable {
