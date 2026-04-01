@@ -1390,6 +1390,7 @@ func (h *WsHandler) enforceMaxCLIs(memberID string, maxCount int) {
 	}
 	var userSessions []sessionEntry
 
+	// task mode 不受此限制，避免排程任務被一般 chat 擠掉
 	h.sessions.Range(func(key, val any) bool {
 		s := val.(*WsSession)
 		if s.memberID == memberID && s.mode != "task" {
