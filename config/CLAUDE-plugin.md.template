@@ -4,9 +4,18 @@
 
 ## 第零步：先確認目標目錄與 codeStem
 
+### 工作目錄（重要）
+
+- 你的 **CWD 就是 vault 根目錄**（例如 `/vaults/abc123/`）
+- 唯一允許寫入的路徑是 `plugins/<系統提供的目錄名>/`（相對於 CWD）
+- **直接 `mkdir -p plugins/<目錄名>` 建立目錄**，不要浪費工具呼叫去 `ls /`、`find /`、`pwd`、`ls /app/`、`ls /home/` 探索容器環境
+- **禁止讀取或存取 `plugins/` 下其他插件的目錄或檔案**（那些可能是失敗產物）
+- **禁止存取 vault 根目錄以外的任何路徑**
+
+### 目錄與 codeStem
+
 - 用戶訊息第一行會明確給你目標目錄，例如：`插件目錄名稱：plugins/番茄鐘插件-cd1677/`
 - **必須使用系統提供的目錄名，不得自行改目錄名、另建第二個插件目錄、或把檔案寫到其他名稱的目錄**
-- **直接 `mkdir -p <目標目錄>` 建立目錄**，不要浪費工具呼叫去 ls / pwd / glob 檢查目錄是否存在
 - 在寫任何檔案前，先自行選定一個固定的 **ASCII `codeStem`**
 - `codeStem` 只可使用英文字母、數字、連字號，整個插件都必須固定使用同一個 `codeStem`
 - `codeStem` 用途必須統一：
@@ -37,7 +46,7 @@
 如果參考文件不夠，根據 PLUGINS_INDEX.md 中的檔案說明，自行決定讀取哪個內建插件的原始碼。
 大多數情況下不需要這步。
 
-**禁止讀取用戶 vault 裡的現有插件目錄。** 那些可能是之前失敗的產物。
+**禁止讀取用戶 vault 裡 `plugins/` 下的其他插件目錄。** 那些可能是之前失敗的產物。只能讀取 `{VAULT_SHARED}/plugins-src/` 內的參考檔案。
 
 ## 第四步：先判斷主要掛載方式，再開始寫碼
 
@@ -171,6 +180,8 @@ class MyListView extends ReactView {
 
 ## 寫入規則
 
+### 基本
+
 - 所有檔案寫在**系統提供的目標目錄**內
 - 不得改動、重命名、搬移系統提供的插件目錄
 - 元件名、檔名 stem、CSS prefix、localStorage key 一律使用同一個 `codeStem`
@@ -186,33 +197,162 @@ registerPluginClass(PomodoroPlugin, '番茄鐘', {
 });
 ```
   `descriptionKey` 會顯示在「插件管理面板」的插件說明區域，**不寫的話使用者看到的插件列表就沒有任何說明**
+
+### SDK / Import 規則
+
+- 所有框架 API（`Plugin`、`ReactView`、`registerPluginClass`、`useItemStore`、`i18n` 等）一律從 `@cubelv/sdk` import
+- **禁止 `require()`** — 只能用 ES module `import`
+- **禁止 `import React from 'react'`**（本環境使用 `jsx: 'automatic'`）
+- 允許的 import 來源只有三種：
+  1. `@cubelv/sdk` — 框架 API
+  2. 相對路徑 `'./xxx'` — 同插件內的檔案
+  3. `package.json` 中 `dependencies` 宣告的第三方庫
+- 沒有宣告在 `dependencies` 的第三方庫不能 import
+
+### React 資源清理（重要 — 不做會造成記憶體洩漏與重複執行）
+
+- `useEffect` 中啟動的 `setInterval` / `setTimeout` 必須在清理函式中 `clearInterval` / `clearTimeout`
+- `useEffect` 中建立的 `AudioContext` 必須在清理函式中 `.close()`
+- `useEffect` 中加的 `addEventListener` 必須在清理函式中 `removeEventListener`
+- **反面範例（禁止）：**
+```typescript
+useEffect(() => {
+    const id = setInterval(tick, 1000);
+    // 沒有 return cleanup — 切換頁面後 interval 仍在跑
+}, []);
+```
+- **正確做法：**
+```typescript
+useEffect(() => {
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+}, []);
+```
+- 插件層級（非 React 元件內）的 interval 用 `this.registerInterval(setInterval(fn, ms))` 讓框架在 `onunload()` 時自動清理
+- 其他需要清理的資源用 `this.register(() => { /* cleanup */ })`
+
+### 狀態持久化
+
+- 插件內部設定（如用戶偏好、上次選中項等）使用 `localStorage`
+- key 格式必須是 `plugin:<codeStem>:<名稱>`，例如 `plugin:pomodoro:workMinutes`
+- 讀取時必須 `try-catch`，解析失敗就用預設值：
+```typescript
+function loadSetting<T>(key: string, defaultValue: T): T {
+    try { return JSON.parse(localStorage.getItem(key) ?? '') ?? defaultValue; }
+    catch { return defaultValue; }
+}
+```
+- **禁止使用 IndexedDB、WebSQL、或 fetch 外部 API 儲存資料**
+
+### CSS 與主題（重要 — 不用 token 在深色模式會全部壞掉）
+
 - 一般樣式一律使用 `import './x.css'`
 - **不要手動注入 `<style>`**，除非樣式內容是在執行期動態生成；若真的手動插入，必須在 `onunload()` 清理
 - CSS class 用 `codeStem` 當前綴，例如 `.pomodoro-timer`
+- **禁止任何硬編碼顏色值**（`#fff`、`#333`、`rgb(...)`、`rgba(...)`），必須使用 CSS 變數：
+  - 文字顏色：`var(--on)`
+  - 文字次要：`color-mix(in srgb, var(--on) 75%, transparent)`
+  - 文字第三層：`color-mix(in srgb, var(--on) 50%, transparent)`
+  - 背景色：`var(--background)` / `var(--surface)`
+  - 主色：`var(--primary)`
+  - 強調色：`var(--accent)`
+  - 錯誤色：`var(--error)`
+  - 高亮色：`var(--highlight)`
+  - 邊框/分隔線：`1px solid color-mix(in srgb, var(--on) 8%, transparent)` 或 `16%`
+  - 陰影：`box-shadow: 0 2px 8px color-mix(in srgb, var(--on) 10%, transparent)`
+- **hover 效果規則：** opacity 顯隱（0→1）必須包在 `@media (hover: hover)` 中；color/background-color/transform 等樣式變化不需包在 media query
+- 彩色文字做法：`background: var(--rainbow); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;`
+
+### 國際化 i18n（重要 — 所有使用者可見文字都必須翻譯）
+
+- **所有 UI 文字**（按鈕文字、標題、placeholder、tooltip、提示訊息、aria-label）一律使用 `i18n.t('key')`
+- **禁止任何硬編碼的使用者可見字串**，包括看起來「只有英文應該沒問題」的文字（如 `"Start"`、`"Settings"`）
+- 翻譯必須同時提供 **`zh-Hant`、`en`、`ja`** 三個語系，在 `setupI18n` 中用 `registerPluginLocales` 註冊
+- **反面範例（禁止）：**
+```tsx
+<button>開始</button>
+<button>Start</button>
+```
+- **正確做法：**
+```tsx
+<button>{i18n.t('start')}</button>
+```
+並在 `setupI18n` 中：
+```typescript
+registerPluginLocales('PomodoroPlugin', {
+    'zh-Hant': { start: '開始' },
+    'en': { start: 'Start' },
+    'ja': { start: '開始' },
+});
+```
+- 數字、純標點符號、codeStem 不需翻譯
+
+### 其他禁令
+
 - `.map()` 渲染的 JSX 必須有 `key`
 - **禁止硬編碼任何 24 位 hex 字串**
 - **禁止硬編碼 memberID、folderID、plugin ID**
-- **禁止多餘 `import React from 'react'`**（本環境使用 `jsx: 'automatic'`）
 - **禁止 banner 註解**（例如 `// ===== xxx =====`）
 - **禁止使用 emoji**：所有文字、標題、按鈕、log 一律不准出現 emoji 字元
 - **禁止在 `plugins/` 以外寫入**
 
-## 完成前自檢（必做）
+## 完成前自檢（必做 — 逐項執行，不可跳過）
 
-在停止前，必須自行檢查以下項目全部成立：
+在結束前，**必須用 `grep` 或重新讀取檔案**逐項驗證以下所有項目。每項後方標注了可用的檢查方式。
 
-- `registerPluginClass(...)` 已存在於入口檔
-- 第三方庫有寫在 package.json 的 dependencies 中
-- 沒有 `main.tsx`
-- 沒有任何 24 位 hex literal
-- 沒有 `import React from 'react'`
-- 沒有 `// =====` 這類 banner 註解
-- 靜態 CSS 都是透過 `import './x.css'`
-- 只寫入系統指定的插件目錄
-- 有畫面的插件使用了 `registerSidebarWithView`，沒有手動寫 subscribe + ensureMounted
-- 有至少一個不依賴快捷鍵的可見入口（sidebar section、FAB 按鈕等），使用者能直接看到並操作
+### A. 結構與註冊
+
+- [ ] 入口檔案中有且僅有一次 `registerPluginClass(...)` 呼叫 → `grep registerPluginClass *.tsx`
+- [ ] `registerPluginClass` 的 options 包含 `descriptionKey` 和 `setupI18n`
+- [ ] 有畫面的插件使用了 `registerSidebarWithView`，沒有手動寫 `subscribe` + `ensureMounted`
+- [ ] 有至少一個不依賴快捷鍵的可見入口
+- [ ] 不存在 `main.tsx` → `ls main.tsx` 應回傳找不到
+
+### B. 禁用模式掃描
+
+對插件目錄執行以下 grep，每項結果必須為 0 筆：
+
+- [ ] `grep -rn 'import React from' *.tsx *.ts` → 0 筆
+- [ ] `grep -rn '// =====' *.tsx *.ts` → 0 筆
+- [ ] `grep -rEn '#[0-9a-fA-F]{3,8}' *.css` → 0 筆（CSS 中無硬編碼顏色）
+- [ ] `grep -rEn "rgb\(|rgba\(" *.css` → 0 筆（CSS 中無 rgb/rgba）
+- [ ] `grep -rn 'require(' *.tsx *.ts` → 0 筆
+
+### C. React 品質
+
+- [ ] 所有 `.map(` 的 JSX 都有 `key` prop → `grep -n '\.map(' *.tsx` 逐一確認
+- [ ] 所有 `useEffect` 中的 `setInterval` / `setTimeout` 都有對應的清理函式
+- [ ] 所有 `useEffect` 中的 `addEventListener` 都有對應 `removeEventListener`
+- [ ] 若使用 `AudioContext`，清理函式有 `.close()`
+
+### D. 國際化
+
+- [ ] 所有 `.tsx` 中沒有硬編碼的使用者可見中文/英文/日文字串 → 全部使用 `i18n.t()`
+- [ ] `setupI18n` 中同時提供 `zh-Hant`、`en`、`ja` 三種語系
+- [ ] `registerPluginLocales` 中的 key 與元件中 `i18n.t()` 使用的 key 完全對應
+
+### E. CSS 主題
+
+- [ ] 所有顏色都使用 `var(--on)`、`var(--surface)`、`var(--background)`、`var(--primary)`、`var(--accent)` 等 CSS 變數
+- [ ] hover opacity 效果包在 `@media (hover: hover)` 中
+
+### F. 持久化與安全
+
+- [ ] `localStorage` 的 key 都以 `plugin:<codeStem>:` 為前綴
+- [ ] `localStorage` 讀取有 `try-catch` 包裹
+- [ ] 只寫入系統指定的插件目錄，沒有寫到 `plugins/` 以外
+- [ ] 沒有硬編碼的 24 位 hex 字串、memberID、folderID、plugin ID
+- [ ] 沒有 emoji 字元
+
+### G. 依賴
+
+- [ ] 所有用到的第三方庫都寫在 `package.json` 的 `dependencies` 中
+- [ ] 沒有多餘未使用的 dependencies
 
 ## 安全限制
 
-1. 只能在系統指定的插件目錄內寫入
-2. Bash 只用絕對路徑
+1. 只能在系統指定的插件目錄內寫入，禁止寫到 `plugins/` 以外
+2. Bash 指令只在插件目錄內執行，禁止 `cd /`、`ls /`、`cat /etc/` 等探索容器的操作
+3. 禁止讀取其他插件的目錄
+4. 禁止 `fetch` / `XMLHttpRequest` 外部 URL
+5. 禁止 `eval()`、`new Function()`
