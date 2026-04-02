@@ -112,14 +112,6 @@ func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 // HandleForgeAPI 接收來自 MCP plugin-forge 的插件鍛造請求
 // 啟動 Sub-Agent，透過 WebSocket 串流意圖事件，完成後回傳 JSON 結果
 func (h *WsHandler) HandleForgeAPI(w http.ResponseWriter, r *http.Request) {
-	// Internal Secret 認證
-	secret := r.Header.Get("X-Internal-Secret")
-	expected := os.Getenv("INTERNAL_SECRET")
-	if expected == "" || secret != expected {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	var req struct {
 		Title       string `json:"title"`
 		Prompt      string `json:"prompt"`
@@ -130,32 +122,46 @@ func (h *WsHandler) HandleForgeAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Title == "" || req.Prompt == "" || req.MemberID == "" || req.WsSessionID == "" {
-		http.Error(w, "title, prompt, memberID, wsSessionID required", http.StatusBadRequest)
+	if req.Title == "" || req.Prompt == "" || req.MemberID == "" {
+		http.Error(w, "title, prompt, memberID required", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("[ForgeAPI] received forge request: title=%q member=%s session=%s", req.Title, req.MemberID, req.WsSessionID)
+	log.Printf("[ForgeAPI] received forge request: title=%q member=%s wsSession=%s", req.Title, req.MemberID, req.WsSessionID)
 
-	// 精確匹配 WebSocket session
-	val, ok := h.sessions.Load(req.WsSessionID)
-	if !ok {
-		log.Printf("[ForgeAPI] session %s not found", req.WsSessionID)
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
+	// 精確查找 WebSocket session（優先用 wsSessionID，fallback 用 memberID）
+	var session *WsSession
+	if req.WsSessionID != "" {
+		sessionKey := req.MemberID + ":" + req.WsSessionID
+		if val, ok := h.sessions.Load(sessionKey); ok {
+			session = val.(*WsSession)
+			log.Printf("[ForgeAPI] found session by exact key: %s", sessionKey)
+		}
 	}
-	session := val.(*WsSession)
-	log.Printf("[ForgeAPI] found WebSocket session for member %s", req.MemberID)
+	if session == nil {
+		h.sessions.Range(func(key, value interface{}) bool {
+			if s, ok := value.(*WsSession); ok && s.memberID == req.MemberID {
+				session = s
+				return false
+			}
+			return true
+		})
+		if session != nil {
+			log.Printf("[ForgeAPI] found session by memberID fallback: %s", req.MemberID)
+		} else {
+			log.Printf("[ForgeAPI] no active WebSocket session for member %s", req.MemberID)
+		}
+	}
 
-	// 阻塞等待 tool_call_id（主串流 tool_use 事件須先到）
+	// 從 session 取出對應的 tool_call_id
 	var toolCallID string
-	select {
-	case toolCallID = <-session.forgeToolCallIDs:
-		log.Printf("[ForgeAPI] got tool_call_id: %s", toolCallID)
-	case <-time.After(5 * time.Second):
-		log.Printf("[ForgeAPI] tool_call_id timeout")
-		http.Error(w, "tool_call_id not received in time", http.StatusGatewayTimeout)
-		return
+	if session != nil {
+		select {
+		case toolCallID = <-session.forgeToolCallIDs:
+			log.Printf("[ForgeAPI] got tool_call_id: %s", toolCallID)
+		default:
+			log.Printf("[ForgeAPI] no tool_call_id available in queue")
+		}
 	}
 
 	// Credit check
