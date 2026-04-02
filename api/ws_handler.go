@@ -13,7 +13,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1769,7 +1768,6 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		"--output-format", "stream-json",
 		"--verbose",
 		"--model", forgeModel,
-		"--max-thinking-tokens", "10000",
 		"--dangerously-skip-permissions",
 		"--mcp-config", "/app/config/claude-forge-settings.json",
 		"--system-prompt", instructions,
@@ -1955,48 +1953,16 @@ func (h *WsHandler) executePluginForge(session *WsSession, memberID, forgeTitle,
 		return map[string]interface{}{"status": "error", "error": errMsg}
 	}
 
-	sendWS(map[string]interface{}{"type": "sub_agent_intent", "step": "forge_compile"})
-
-	// 如果插件目錄有 package.json，先安裝第三方依賴
-	pluginAbsDir := filepath.Join(workDir, "plugins", pluginDir)
-	pkgJSONPath := filepath.Join(pluginAbsDir, "package.json")
-	if _, statErr := os.Stat(pkgJSONPath); statErr == nil {
-		npmCmd := exec.CommandContext(forgeCtx, "npm", "install", "--production", "--no-audit", "--no-fund")
-		npmCmd.Dir = pluginAbsDir
-		if uid, gid, ok := executor.MemberCredentialsIfAvailable(memberID); ok {
-			npmCmd.SysProcAttr = &syscall.SysProcAttr{
-				Credential: &syscall.Credential{Uid: uid, Gid: gid},
-			}
-		}
-		npmOut, npmErr := npmCmd.CombinedOutput()
-		if npmErr != nil {
-			log.Printf("[PluginForge] npm install failed: %s", string(npmOut))
-		} else {
-			log.Printf("[PluginForge] npm install success in %s", pluginAbsDir)
-		}
-	}
-
-	// esbuild 打包（只 external 共享模組，第三方庫打包進 bundle）
-	entryPath := filepath.Join(pluginAbsDir, entryFile)
+	// Sub-Agent 自己負責 npm install + esbuild（在 CLAUDE-plugin template 中指示）
+	// Go server 只讀取 Sub-Agent 生成的 bundle.js
 	bundlePath := filepath.Join(workDir, "plugins", pluginDir, "bundle.js")
-	esbuildCmd := exec.CommandContext(forgeCtx, "node", "/app/config/esbuild-plugin-bundle.mjs",
-		entryPath, bundlePath)
-	if uid, gid, ok := executor.MemberCredentialsIfAvailable(memberID); ok {
-		esbuildCmd.SysProcAttr = &syscall.SysProcAttr{
-			Credential: &syscall.Credential{Uid: uid, Gid: gid},
-		}
-	}
-	esbuildOut, esbuildErr := esbuildCmd.CombinedOutput()
-	if esbuildErr != nil {
-		if errors.Is(forgeCtx.Err(), context.Canceled) {
-			return cancelledResult()
-		}
-		errMsg := fmt.Sprintf("esbuild 編譯失敗: %s", string(esbuildOut))
+	if _, statErr := os.Stat(bundlePath); statErr != nil {
+		errMsg := fmt.Sprintf("Sub-Agent 未生成 bundle.js（插件目錄: %s）。Sub-Agent 可能未執行 esbuild 編譯步驟。", pluginDir)
 		log.Printf("[PluginForge] %s", errMsg)
 		sendWS(map[string]interface{}{"type": "sub_agent_complete", "status": "error", "error": errMsg})
 		return map[string]interface{}{"status": "error", "error": errMsg}
 	}
-	log.Printf("[PluginForge] esbuild success: %s", bundlePath)
+	log.Printf("[PluginForge] bundle.js found: %s", bundlePath)
 
 	// 計算 bundle hash
 	bundleFullPath := filepath.Join(memberID, "plugins", pluginDir, "bundle.js")
