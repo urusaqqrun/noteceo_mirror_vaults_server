@@ -300,6 +300,9 @@ registerPluginLocales('PomodoroPlugin', {
 
 寫完所有檔案後，你必須自己執行 esbuild 編譯。如果編譯失敗，修正代碼後重新編譯，直到成功為止。
 
+**嚴禁直接呼叫 `npx esbuild`、`esbuild` CLI 或自己寫 esbuild script。**
+必須使用下方指定的包裝腳本，它會自動處理 format=iife、external singleton（react/react-dom/@cubelv/sdk）、JSX automatic 等設定。
+
 步驟：
 
 1. 如果有 package.json，先安裝依賴：
@@ -307,13 +310,18 @@ registerPluginLocales('PomodoroPlugin', {
 cd plugins/{你的插件目錄}/ && npm install --production --no-audit --no-fund
 ```
 
-2. 找到入口檔（`*Plugin.tsx`），執行 esbuild：
+2. 找到入口檔（`*Plugin.tsx`），**必須**用包裝腳本編譯：
 ```bash
 node /app/config/esbuild-plugin-bundle.mjs plugins/{你的插件目錄}/{CodeStem}Plugin.tsx plugins/{你的插件目錄}/bundle.js
 ```
 
 3. 如果 esbuild 報錯，閱讀錯誤訊息，修正代碼，然後重新執行步驟 2
 4. 確認 `bundle.js` 已生成
+5. 驗證 bundle 格式正確（前端用 eval 載入，不支援 ES module）：
+```bash
+grep -c '^import ' plugins/{你的插件目錄}/bundle.js
+```
+結果必須為 `0`。若不為 0，代表你沒有使用包裝腳本，回到步驟 2 重新編譯。
 
 ## 完成前自檢（必做 — 逐項執行，不可跳過）
 
@@ -327,6 +335,7 @@ node /app/config/esbuild-plugin-bundle.mjs plugins/{你的插件目錄}/{CodeSte
 - [ ] 有至少一個不依賴快捷鍵的可見入口
 - [ ] 不存在 `main.tsx` → `ls main.tsx` 應回傳找不到
 - [ ] **`bundle.js` 已成功生成**（上面的編譯步驟已通過）
+- [ ] **`bundle.js` 不含 ES module 語法** → `grep -c '^import ' bundle.js` 結果為 0
 
 ### B. 禁用模式掃描
 
