@@ -19,64 +19,19 @@ if [ "$STOP_ACTIVE" = "true" ]; then
   exit 0
 fi
 
-# plugin scope：檢查插件結構
+# plugin scope：用共享 validator 檢查插件結構
 if [ "$TASK_SCOPE" = "plugin" ]; then
   ERRORS=""
+  VALIDATOR="/app/config/plugin-validator.sh"
   while IFS= read -r plugin_dir; do
     REL=$(echo "$plugin_dir" | sed "s|$CWD/||")
-
-    # 入口必須是 *Plugin.tsx，不接受 main.tsx
-    entry_found=false
-    for f in "$plugin_dir"/*Plugin.tsx; do
-      [ -f "$f" ] && entry_found=true && break
-    done
-    if [ "$entry_found" = false ]; then
-      append_error "${REL} 缺少入口檔案（必須是 *Plugin.tsx，禁止用 main.tsx）"
+    if ! OUTPUT=$(bash "$VALIDATOR" "$plugin_dir" 2>&1); then
+      while IFS= read -r line; do
+        [ -n "$line" ] && append_error "${REL}: $line"
+      done <<EOF
+$OUTPUT
+EOF
     fi
-
-    # 禁止 main.tsx
-    if [ -f "$plugin_dir/main.tsx" ]; then
-      append_error "${REL}/main.tsx 禁止使用，入口檔必須命名為 {Name}Plugin.tsx"
-    fi
-
-    # 必須多檔案：至少 3 個 .tsx/.ts/.css 檔案
-    file_count=$(find "$plugin_dir" -maxdepth 1 \( -name "*.tsx" -o -name "*.ts" -o -name "*.css" \) | wc -l | tr -d ' ')
-    if [ "$file_count" -lt 3 ]; then
-      append_error "${REL} 只有 ${file_count} 個檔案，必須拆分為多個檔案（Plugin + View + CSS 至少 3 個）"
-    fi
-
-    # 禁止 bundle.css，CSS 必須用插件名稱命名
-    if [ -f "$plugin_dir/bundle.css" ]; then
-      append_error "${REL}/bundle.css 禁止使用，CSS 檔案必須用有意義的名稱（如 Timer.css）"
-    fi
-
-    # 必須生成 bundle.js
-    if [ ! -f "$plugin_dir/bundle.js" ]; then
-      append_error "${REL}/bundle.js 缺失，必須完成編譯後才能結束"
-    else
-      # bundle.js 不可保留 ES module import
-      if grep -q '^import ' "$plugin_dir/bundle.js"; then
-        append_error "${REL}/bundle.js 含有 ES module import，必須使用 IIFE 編譯"
-      fi
-    fi
-
-    # 禁止錯誤的 i18n import
-    if grep -REn "import[[:space:]]*\\{[^}]*\\bi18n\\b[^}]*\\}[[:space:]]*from[[:space:]]*['\"]@cubelv/sdk['\"]" \
-      "$plugin_dir"/*.ts "$plugin_dir"/*.tsx >/dev/null 2>&1; then
-      append_error "${REL} 使用了被禁止的 i18n import，必須改成 i18next"
-    fi
-
-    # 禁止 React default import
-    if grep -REn "import[[:space:]]+React[[:space:]]+from[[:space:]]*['\"]react['\"]" \
-      "$plugin_dir"/*.ts "$plugin_dir"/*.tsx >/dev/null 2>&1; then
-      append_error "${REL} 使用了被禁止的 React default import"
-    fi
-
-    # 禁止 require
-    if grep -RIn "require(" "$plugin_dir"/*.ts "$plugin_dir"/*.tsx >/dev/null 2>&1; then
-      append_error "${REL} 使用了被禁止的 require()"
-    fi
-
   done < <(find "$CWD/plugins" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
 
   if [ -n "$ERRORS" ]; then

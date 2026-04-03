@@ -24,6 +24,16 @@ const TOOL_DEF = {
   }
 };
 
+function loadScopedSessionBinding() {
+  const bindingPath = join(process.cwd(), `.ws_session_id.${process.ppid}.json`);
+  try {
+    const parsed = JSON.parse(readFileSync(bindingPath, 'utf8'));
+    return typeof parsed?.sessionID === 'string' ? parsed.sessionID.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 async function forgePlugin(args) {
   const { title, prompt } = args;
   if (!title || !prompt) return '錯誤：title 和 prompt 為必填';
@@ -31,8 +41,9 @@ async function forgePlugin(args) {
   const memberID = process.env.VAULT_USER_ID || '';
   let wsSessionID = process.env.WS_SESSION_ID || '';
   if (!wsSessionID) {
-    try { wsSessionID = readFileSync(join(process.cwd(), '.ws_session_id'), 'utf8').trim(); } catch {}
+    wsSessionID = loadScopedSessionBinding();
   }
+  if (!memberID || !wsSessionID) return '錯誤：缺少有效的 forge session 綁定';
 
   // forge 禁止 timeout — 用 http.request 手動發 POST，socket timeout 設為 0（永不超時）
   const http = await import('http');

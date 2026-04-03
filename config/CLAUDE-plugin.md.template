@@ -324,10 +324,15 @@ node /app/config/esbuild-plugin-bundle.mjs plugins/{你的插件目錄}/{CodeSte
 grep -c '^import ' plugins/{你的插件目錄}/bundle.js
 ```
 結果必須為 `0`。若不為 0，代表你沒有使用包裝腳本，回到步驟 2 重新編譯。
+6. 最後執行共享驗證器（這也是 hook 與後端註冊前會使用的同一套規則）：
+```bash
+bash /app/config/plugin-validator.sh plugins/{你的插件目錄}
+```
 
 ## 完成前自檢（必做 — 逐項執行，不可跳過）
 
 在結束前，**必須用 `grep` 或重新讀取檔案**逐項驗證以下所有項目。每項後方標注了可用的檢查方式。
+其中 `/app/config/plugin-validator.sh` 是最終機器驗證來源；若共享驗證器失敗，代表不能結束也不能註冊。
 
 ### A. 結構與註冊
 
