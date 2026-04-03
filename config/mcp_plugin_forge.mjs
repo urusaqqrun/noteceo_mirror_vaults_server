@@ -9,7 +9,11 @@ import { createInterface } from 'readline';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-const MIRROR_SERVICE_URL = process.env.MIRROR_INTERNAL_URL || 'http://localhost:8080';
+if (!process.env.MIRROR_INTERNAL_URL) {
+  process.stderr.write('[plugin-forge] MIRROR_INTERNAL_URL 未設定\n');
+  process.exit(1);
+}
+const MIRROR_SERVICE_URL = process.env.MIRROR_INTERNAL_URL;
 
 const TOOL_DEF = {
   name: 'plugin_forge',

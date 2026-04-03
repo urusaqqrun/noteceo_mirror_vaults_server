@@ -68,6 +68,14 @@
                 {
                     "name": "SYNC_CHANGE_BATCH_SIZE",
                     "value": "100"
+                },
+                {
+                    "name": "CLI_WORKER_URL",
+                    "value": "http://cli-worker.svc.local:9090"
+                },
+                {
+                    "name": "SERVICE_WORKER_URL",
+                    "value": "http://service-worker.svc.local:9091"
                 }
             ],
             "secrets": [
