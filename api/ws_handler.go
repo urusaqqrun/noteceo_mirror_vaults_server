@@ -103,6 +103,17 @@ func NewWsHandler(chatStore ChatStore, snapshotStore SnapshotStore, itemWriter e
 	}
 }
 
+// BroadcastToMember 對指定 memberID 的所有 WS session 發送訊息
+func (h *WsHandler) BroadcastToMember(memberID string, msg map[string]interface{}) {
+	h.sessions.Range(func(key, val any) bool {
+		s := val.(*WsSession)
+		if s.memberID == memberID {
+			s.Send(msg)
+		}
+		return true
+	})
+}
+
 // RegisterRoutes registers the WebSocket route on the provided mux.
 func (h *WsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ws/chat", h.HandleWebSocket)
