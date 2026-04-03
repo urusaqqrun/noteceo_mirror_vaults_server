@@ -213,6 +213,29 @@ func (w *WorkerClient) ForgeSSE(ctx context.Context, req ForgeReq) (<-chan json.
 	return ch, nil
 }
 
+// RebuildReq 插件重新編譯請求
+type RebuildReq struct {
+	MemberID  string `json:"memberID"`
+	PluginDir string `json:"pluginDir"`
+}
+
+// RebuildResp 插件重新編譯回應
+type RebuildResp struct {
+	Status     string `json:"status"`
+	PluginDir  string `json:"pluginDir"`
+	BundleHash string `json:"bundleHash"`
+	Error      string `json:"error,omitempty"`
+}
+
+// Rebuild 觸發 CLI Worker 重新編譯插件（npm install + esbuild + validator）
+func (w *WorkerClient) Rebuild(ctx context.Context, req RebuildReq) (*RebuildResp, error) {
+	var resp RebuildResp
+	if err := w.doJSON(ctx, "POST", "/internal/rebuild", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // RemoteCLI 實現 ChatCLI 介面，透過 WorkerClient 代理到 CLI Worker
 type RemoteCLI struct {
 	worker    *WorkerClient

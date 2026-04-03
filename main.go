@@ -113,7 +113,7 @@ func main() {
 	pluginHandler := api.NewPluginHandler(vaultFS, pgStore, vaultLock, projector, svcHandler)
 	pluginHandler.RegisterRoutes(mux)
 
-	vaultSyncHandler := api.NewVaultSyncHandler(vaultFS, cfg.VaultRoot, wsHandler)
+	vaultSyncHandler := api.NewVaultSyncHandler(vaultFS, cfg.VaultRoot, wsHandler, workerClient)
 	vaultSyncHandler.RegisterRoutes(mux)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

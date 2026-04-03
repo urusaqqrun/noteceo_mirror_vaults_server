@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -20,15 +21,21 @@ type WsBroadcaster interface {
 	BroadcastToMember(memberID string, msg map[string]interface{})
 }
 
+// PluginRebuilder 能觸發插件重新編譯
+type PluginRebuilder interface {
+	Rebuild(ctx context.Context, req RebuildReq) (*RebuildResp, error)
+}
+
 // VaultSyncHandler 提供 vault 檔案級同步 API
 type VaultSyncHandler struct {
 	vaultFS     mirror.VaultFS
 	vaultRoot   string
 	broadcaster WsBroadcaster
+	rebuilder   PluginRebuilder
 }
 
-func NewVaultSyncHandler(vaultFS mirror.VaultFS, vaultRoot string, broadcaster WsBroadcaster) *VaultSyncHandler {
-	return &VaultSyncHandler{vaultFS: vaultFS, vaultRoot: vaultRoot, broadcaster: broadcaster}
+func NewVaultSyncHandler(vaultFS mirror.VaultFS, vaultRoot string, broadcaster WsBroadcaster, rebuilder PluginRebuilder) *VaultSyncHandler {
+	return &VaultSyncHandler{vaultFS: vaultFS, vaultRoot: vaultRoot, broadcaster: broadcaster, rebuilder: rebuilder}
 }
 
 func (h *VaultSyncHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -210,6 +217,29 @@ func (h *VaultSyncHandler) HandleFileUpload(w http.ResponseWriter, r *http.Reque
 		})
 	}
 
+	// 插件原始碼變更 → 觸發 CLI Worker 重新編譯
+	if h.rebuilder != nil && isPluginSource(filePath) {
+		pluginDir := extractPluginDir(filePath)
+		if pluginDir != "" {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				resp, err := h.rebuilder.Rebuild(ctx, RebuildReq{MemberID: memberID, PluginDir: pluginDir})
+				if err != nil {
+					log.Printf("[VaultSync] rebuild failed for %s: %v", pluginDir, err)
+					return
+				}
+				log.Printf("[VaultSync] rebuild success: %s hash=%s", pluginDir, resp.BundleHash)
+				// 通知前端 bundle 已更新
+				if h.broadcaster != nil {
+					h.broadcaster.BroadcastToMember(memberID, map[string]interface{}{
+						"type": "vault_changed",
+					})
+				}
+			}()
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "ok",
@@ -266,4 +296,24 @@ func (h *VaultSyncHandler) HandleFileDelete(w http.ResponseWriter, r *http.Reque
 		"status": "ok",
 		"path":   filePath,
 	})
+}
+
+// isPluginSource 判斷是否是插件原始碼（plugins/ 下，不含 bundle.js / node_modules）
+func isPluginSource(filePath string) bool {
+	if !strings.HasPrefix(filePath, "plugins/") {
+		return false
+	}
+	if strings.HasSuffix(filePath, "/bundle.js") || strings.Contains(filePath, "/node_modules/") {
+		return false
+	}
+	return true
+}
+
+// extractPluginDir 從 "plugins/kanban-abc123/main.tsx" 提取 "kanban-abc123"
+func extractPluginDir(filePath string) string {
+	parts := strings.SplitN(filePath, "/", 3)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return ""
 }
