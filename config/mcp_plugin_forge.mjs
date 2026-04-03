@@ -17,7 +17,7 @@ const MIRROR_SERVICE_URL = process.env.MIRROR_INTERNAL_URL;
 
 const TOOL_DEF = {
   name: 'plugin_forge',
-  description: '啟動插件鍛造 Sub-Agent 建立新插件。當用戶要求新增自定義功能（如番茄鐘、看板、自定義面板等）時使用此工具。只需呼叫一次，Sub-Agent 會自動處理前端 UI 和後端服務（如果需要）。不要分開呼叫前端和後端，一次呼叫即完成所有工作。',
+  description: '啟動插件鍛造 Sub-Agent 建立新插件。當用戶要求新增自定義功能（如番茄鐘、看板、自定義面板等）時使用此工具。Sub-Agent 會讀取內建插件原始碼作為參考，自動建立、編譯並註冊新插件。',
   inputSchema: {
     type: 'object',
     properties: {

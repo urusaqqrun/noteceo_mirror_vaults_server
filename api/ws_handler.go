@@ -81,6 +81,7 @@ type WsHandler struct {
 	vaultFS       mirror.VaultFS
 	sessions      sync.Map // sessionKey -> *WsSession
 	snapCache     sync.Map // memberID -> *cachedSnapshot
+	forgeSem      chan struct{} // semaphore：同一時間只允許 1 個 forge
 	workerClient  *WorkerClient
 }
 
@@ -92,6 +93,7 @@ func NewWsHandler(chatStore ChatStore, snapshotStore SnapshotStore, itemWriter e
 		itemWriter:    itemWriter,
 		vaultRoot:     vaultRoot,
 		vaultFS:       vaultFS,
+		forgeSem:      make(chan struct{}, 1),
 		workerClient:  workerClient,
 	}
 }
@@ -133,6 +135,16 @@ func (h *WsHandler) HandleForgeAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[ForgeAPI] received forge request: title=%q member=%s wsSession=%s", req.Title, req.MemberID, req.WsSessionID)
+
+	// semaphore：同一時間只允許 1 個 forge
+	select {
+	case h.forgeSem <- struct{}{}:
+		defer func() { <-h.forgeSem }()
+	default:
+		log.Printf("[ForgeAPI] rejected: forge already running")
+		http.Error(w, "另一個插件鍛造正在進行中，請等待完成後再試", http.StatusConflict)
+		return
+	}
 
 	// 精確匹配 WebSocket session（與 HandleWebSocket 中的 sessionKey 格式一致）
 	sessionKey := req.MemberID + ":" + req.WsSessionID
