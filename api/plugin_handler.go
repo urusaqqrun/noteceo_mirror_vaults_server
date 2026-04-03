@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"io/fs"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -50,7 +49,6 @@ func (h *PluginHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/vault/plugin", h.HandleDelete)
 	mux.HandleFunc("/api/vault/plugin/bundle", h.HandleBundleDownload)
 	mux.HandleFunc("/api/vault/plugin/css", h.HandleCSSDownload)
-	mux.HandleFunc("/api/vault/plugin/source", h.HandleSourceDownload)
 }
 
 type deletePluginRequest struct {
@@ -265,60 +263,3 @@ func (h *PluginHandler) HandleCSSDownload(w http.ResponseWriter, r *http.Request
 	w.Write(data)
 }
 
-// HandleSourceDownload returns all source files of a plugin (excluding bundle.js and node_modules).
-// GET /api/vault/plugin/source?memberID=xxx&plugin=pomodoro
-func (h *PluginHandler) HandleSourceDownload(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(204)
-		return
-	}
-
-	memberID := r.URL.Query().Get("memberID")
-	pluginDir := r.URL.Query().Get("plugin")
-
-	if memberID == "" || pluginDir == "" {
-		http.Error(w, "missing memberID or plugin parameter", http.StatusBadRequest)
-		return
-	}
-
-	pluginDir = filepath.Base(pluginDir)
-	if pluginDir == "." || pluginDir == ".." || strings.Contains(pluginDir, "/") {
-		http.Error(w, "invalid plugin name", http.StatusBadRequest)
-		return
-	}
-
-	pluginRoot := filepath.Join(memberID, "plugins", pluginDir)
-	if !h.vaultFS.Exists(pluginRoot) {
-		http.Error(w, "plugin not found", http.StatusNotFound)
-		return
-	}
-
-	files := make(map[string]string)
-
-	_ = h.vaultFS.Walk(pluginRoot, func(path string, info fs.FileInfo, walkErr error) error {
-		if walkErr != nil || info.IsDir() {
-			return nil
-		}
-		rel, relErr := filepath.Rel(pluginRoot, path)
-		if relErr != nil {
-			return nil
-		}
-		if rel == "bundle.js" || strings.HasPrefix(rel, "node_modules"+string(filepath.Separator)) || strings.HasPrefix(rel, ".") {
-			return nil
-		}
-		data, readErr := h.vaultFS.ReadFile(path)
-		if readErr != nil {
-			log.Printf("[PluginHandler] skip unreadable file: %s err=%v", path, readErr)
-			return nil
-		}
-		files[rel] = string(data)
-		return nil
-	})
-
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"pluginDir": pluginDir,
-		"files":     files,
-	})
-}
