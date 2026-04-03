@@ -17,10 +17,11 @@ import (
 
 // PluginHandler serves plugin bundle downloads.
 type PluginHandler struct {
-	vaultFS   mirror.VaultFS
-	itemStore PluginItemStore
-	locker    vaultsync.VaultLocker
-	projector *vaultsync.SyncEventHandler
+	vaultFS        mirror.VaultFS
+	itemStore      PluginItemStore
+	locker         vaultsync.VaultLocker
+	projector      *vaultsync.SyncEventHandler
+	serviceHandler *ServiceHandler
 }
 
 type PluginItemStore interface {
@@ -34,12 +35,14 @@ func NewPluginHandler(
 	itemStore PluginItemStore,
 	locker vaultsync.VaultLocker,
 	projector *vaultsync.SyncEventHandler,
+	serviceHandler *ServiceHandler,
 ) *PluginHandler {
 	return &PluginHandler{
-		vaultFS:   vaultFS,
-		itemStore: itemStore,
-		locker:    locker,
-		projector: projector,
+		vaultFS:        vaultFS,
+		itemStore:      itemStore,
+		locker:         locker,
+		projector:      projector,
+		serviceHandler: serviceHandler,
 	}
 }
 
@@ -157,6 +160,18 @@ func (h *PluginHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("[PluginHandler] removed dir: %s", pluginRoot)
+	}
+
+	serviceRoot := filepath.Join(memberID, "services", pluginDir)
+	if h.vaultFS.Exists(serviceRoot) {
+		if err := h.vaultFS.RemoveAll(serviceRoot); err != nil {
+			log.Printf("[PluginHandler] delete service dir failed: path=%s err=%v", serviceRoot, err)
+		} else {
+			log.Printf("[PluginHandler] removed service dir: %s", serviceRoot)
+		}
+	}
+	if h.serviceHandler != nil {
+		h.serviceHandler.RemoveFromRegistry(memberID, pluginDir)
 	}
 
 	if h.projector != nil {

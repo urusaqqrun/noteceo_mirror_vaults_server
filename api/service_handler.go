@@ -288,6 +288,15 @@ func (h *ServiceHandler) proxyToWorker(w http.ResponseWriter, r *http.Request, m
 	proxy.ServeHTTP(w, r)
 }
 
+// RemoveFromRegistry 從 registry 移除指定 service，讓下次請求重新 ensure
+func (h *ServiceHandler) RemoveFromRegistry(memberID, serviceDir string) {
+	key := memberID + ":" + serviceDir
+	h.mu.Lock()
+	delete(h.registry, key)
+	h.mu.Unlock()
+	log.Printf("[ServiceHandler] removed from registry: %s", key)
+}
+
 func (h *ServiceHandler) registryCleaner() {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()

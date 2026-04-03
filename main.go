@@ -96,9 +96,10 @@ func main() {
 	wsHandler.RegisterRoutes(mux)
 	chatHandler.SetWsHandler(wsHandler)
 
+	var svcHandler *api.ServiceHandler
 	serviceWorkerURL := os.Getenv("SERVICE_WORKER_URL")
 	if serviceWorkerURL != "" {
-		svcHandler := api.NewServiceHandler(cfg.VaultRoot, serviceWorkerURL, workerSecret)
+		svcHandler = api.NewServiceHandler(cfg.VaultRoot, serviceWorkerURL, workerSecret)
 		svcHandler.RegisterRoutes(mux)
 		log.Printf("Service Worker: %s", serviceWorkerURL)
 	}
@@ -109,7 +110,7 @@ func main() {
 	skillHandler := api.NewSkillHandler(vaultFS)
 	skillHandler.RegisterRoutes(mux)
 
-	pluginHandler := api.NewPluginHandler(vaultFS, pgStore, vaultLock, projector)
+	pluginHandler := api.NewPluginHandler(vaultFS, pgStore, vaultLock, projector, svcHandler)
 	pluginHandler.RegisterRoutes(mux)
 
 	vaultSyncHandler := api.NewVaultSyncHandler(vaultFS, cfg.VaultRoot, wsHandler)
