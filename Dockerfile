@@ -20,45 +20,14 @@ FROM debian:bullseye-slim
 
 RUN apt-get update && \
     apt-get install -y ca-certificates tzdata bash curl netcat-openbsd jq findutils && \
-    rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/* && \
-    npm install -g esbuild
+    rm -rf /var/lib/apt/lists/*
 
-# 建立非 root 使用者（Claude CLI 拒絕以 root + --dangerously-skip-permissions 運行）
-RUN groupadd -r mirror && useradd -r -g mirror -m -s /bin/bash mirror
-
-# 以 mirror 身份安裝 Claude CLI
-USER mirror
-RUN curl -fsSL https://claude.ai/install.sh | bash && \
-    /home/mirror/.local/bin/claude --version || echo "⚠️ Claude CLI 安裝失敗"
-ENV PATH="/home/mirror/.local/bin:${PATH}"
-
-# 回到 root 複製檔案、設定權限
-USER root
 WORKDIR /app
 COPY --from=builder /app/vault-mirror-service /app/vault-mirror-service
-COPY ./config/ /app/config/
 COPY ./entrypoint.sh /app/
-
-# esbuild JS API for plugin bundling (config/esbuild-plugin-bundle.mjs)
-RUN cd /app/config && npm init -y > /dev/null 2>&1 && npm install esbuild && rm -f package.json package-lock.json
 
 # 內建插件原始碼（deploy.sh 負責在 build 前下載最新版）
 COPY plugins-src.tar.gz /app/plugins-src.tar.gz
-
-# Claude CLI hooks 設定 + 讓所有 UID 都能讀取 CLI 設定與執行 CLI
-RUN mkdir -p /home/mirror/.claude && \
-    cp /app/config/claude-hooks-settings.json /home/mirror/.claude/settings.json && \
-    cp /app/config/CLAUDE.md.template /home/mirror/.claude/CLAUDE.md && \
-    echo '# clean bashrc for hook compatibility' > /home/mirror/.bashrc && \
-    chmod +x /app/config/hooks/*.sh && \
-    chown -R mirror:mirror /home/mirror/.claude /home/mirror/.bashrc && \
-    chmod -R a+rwX /home/mirror/.claude/ && \
-    chmod -R a+rX /home/mirror/.local/
-
-ENV HOME=/home/mirror
 
 RUN sed -i 's/\r$//' /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
