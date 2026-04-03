@@ -252,6 +252,83 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sessionKey := memberID + ":" + sessionID
+
+	// 嘗試復用上一次斷線時保留的 session（CLI 可能仍存活）
+	if existing, ok := h.sessions.Load(sessionKey); ok {
+		old := existing.(*WsSession)
+		old.mu.Lock()
+		if old.cli != nil && old.cli.IsAlive() {
+			log.Printf("[WS] reusing existing CLI pid=%d for reconnected session %s", old.cli.Pid(), sessionID)
+			old.conn = conn
+			old.done = make(chan struct{})
+			old.status = "idle"
+			old.model = model
+			old.lang = lang
+			old.mu.Unlock()
+
+			// 用復用的 session 繼續後面的流程
+			session := old
+			h.sessions.Store(sessionKey, session)
+
+			conn.SetPongHandler(func(string) error {
+				conn.SetReadDeadline(time.Now().Add(wsPongWait))
+				return nil
+			})
+
+			defer func() {
+				close(session.done)
+				conn.Close()
+			}()
+
+			go func() {
+				ticker := time.NewTicker(wsPingInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if err := conn.WriteControl(
+							websocket.PingMessage, nil, time.Now().Add(wsWriteWait),
+						); err != nil {
+							return
+						}
+					case <-session.done:
+						return
+					}
+				}
+			}()
+
+			session.Send(map[string]interface{}{
+				"type":      "connected",
+				"sessionId": sessionKey,
+			})
+
+			if timezone != "" || lang != "" {
+				h.updateUserLocale(memberID, timezone, lang)
+			}
+
+			for {
+				_, raw, err := conn.ReadMessage()
+				if err != nil {
+					break
+				}
+				var msg map[string]interface{}
+				if err := json.Unmarshal(raw, &msg); err != nil {
+					continue
+				}
+				msgType, _ := msg["type"].(string)
+				switch msgType {
+				case "message":
+					go h.handleMessage(session, sessionKey, msg)
+				case "interrupt":
+					go h.handleInterrupt(session)
+				}
+			}
+			return
+		}
+		old.mu.Unlock()
+	}
+
 	session := &WsSession{
 		conn:             conn,
 		memberID:         memberID,
@@ -263,7 +340,6 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		done:             make(chan struct{}),
 		forgeToolCallIDs: make(chan string, 10),
 	}
-	sessionKey := memberID + ":" + sessionID
 	h.sessions.Store(sessionKey, session)
 
 	// pong handler：收到 pong 就延長 read deadline（只在 asking 狀態下有意義）
@@ -274,33 +350,22 @@ func (h *WsHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		close(session.done)
-		session.mu.Lock()
-		if session.cli != nil {
-			clearWSSessionBinding(filepath.Join(h.vaultRoot, memberID), session.cli.Pid())
-			session.cli.Kill()
-			session.cli = nil
-		}
-		session.mu.Unlock()
-		h.sessions.Delete(sessionKey)
 		conn.Close()
+		// CLI 不在此處 Kill — 交由 idle TTL 自動回收。
+		// session 保留在 map 中，讓同一 sessionKey 重連時能復用 CLI。
 	}()
 
-	// 心跳 goroutine：只在 AI 回應中（asking）才發 ping，閒置時不打
+	// 心跳 goroutine：無條件發 ping，防止 proxy idle timeout 切斷連線
 	go func() {
 		ticker := time.NewTicker(wsPingInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				session.mu.Lock()
-				if session.status == "asking" {
-					err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait))
-					session.mu.Unlock()
-					if err != nil {
-						return
-					}
-				} else {
-					session.mu.Unlock()
+				if err := conn.WriteControl(
+					websocket.PingMessage, nil, time.Now().Add(wsWriteWait),
+				); err != nil {
+					return
 				}
 			case <-session.done:
 				return

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,27 +24,30 @@ type SessionMessage struct {
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
-// jsonlEntry is the per-line structure written to the .jsonl session file.
-type jsonlEntry struct {
-	Type       string                 `json:"type"`
-	Message    jsonlMessage           `json:"message"`
-	UUID       string                 `json:"uuid"`
-	ParentUUID interface{}            `json:"parentUuid"` // string or null
-	Timestamp  string                 `json:"timestamp"`
-	SessionID  string                 `json:"sessionId"`
-	Cwd        string                 `json:"cwd"`
-}
+var (
+	claudeVersionOnce sync.Once
+	claudeVersionStr  string
+)
 
-type jsonlMessage struct {
-	Role    string        `json:"role"`
-	Content []interface{} `json:"content"`
+func getClaudeVersion() string {
+	claudeVersionOnce.Do(func() {
+		out, err := exec.Command("claude", "--version").Output()
+		if err == nil {
+			claudeVersionStr = strings.TrimSpace(string(out))
+		}
+		if claudeVersionStr == "" {
+			claudeVersionStr = "1.0.0"
+		}
+	})
+	return claudeVersionStr
 }
 
 // RebuildSessionJSONL writes chat messages as .jsonl to the Claude CLI session path:
 //
 //	~/.claude/projects/<encoded-workDir>/sessions/<sessionID>.jsonl
 //
-// This enables --resume to restore conversation context when the CLI restarts.
+// The output format matches the real Claude CLI JSONL schema so that
+// `claude --resume <sessionID>` can correctly restore conversation context.
 func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []SessionMessage) error {
 	if sessionID == "" || len(messages) == 0 {
 		return nil
@@ -62,24 +67,21 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 
 	filePath := filepath.Join(sessionsDir, sessionID+".jsonl")
 	cwd := workDir
+	version := getClaudeVersion()
 
 	var lines []string
 	var prevUUID interface{} // null for the first entry
 
+	// Track the last assistant UUID that contained a tool_use, for
+	// sourceToolAssistantUUID on tool result entries.
+	var lastToolAssistantUUID string
+
 	for _, msg := range messages {
-		entry := jsonlEntry{
-			UUID:       msg.ID,
-			ParentUUID: prevUUID,
-			Timestamp:  msg.CreatedAt.UTC().Format(time.RFC3339Nano),
-			SessionID:  sessionID,
-			Cwd:        cwd,
-		}
+		ts := msg.CreatedAt.UTC().Format(time.RFC3339Nano)
 
 		switch msg.Role {
 		case "user":
-			entry.Type = "user"
-
-			// 檢查 attachedItems 中是否有圖片
+			hasImages := false
 			var imageBlocks []interface{}
 			if len(msg.AttachedItems) > 0 && string(msg.AttachedItems) != "null" {
 				var items []map[string]interface{}
@@ -87,6 +89,7 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 					for _, item := range items {
 						if itemType, _ := item["type"].(string); itemType == "image" {
 							if url, _ := item["url"].(string); url != "" {
+								hasImages = true
 								imageBlocks = append(imageBlocks, map[string]interface{}{
 									"type": "image",
 									"source": map[string]interface{}{
@@ -100,27 +103,52 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 				}
 			}
 
-			var content []interface{}
-			content = append(content, imageBlocks...)
-			content = append(content, map[string]string{"type": "text", "text": msg.Content})
-
-			entry.Message = jsonlMessage{
-				Role:    "user",
-				Content: content,
+			// Real CLI uses plain string for content; array only when multimodal
+			var content interface{}
+			if hasImages {
+				blocks := make([]interface{}, 0, len(imageBlocks)+1)
+				blocks = append(blocks, imageBlocks...)
+				blocks = append(blocks, map[string]string{"type": "text", "text": msg.Content})
+				content = blocks
+			} else {
+				content = msg.Content
 			}
 
+			entry := map[string]interface{}{
+				"parentUuid":  prevUUID,
+				"isSidechain": false,
+				"type":        "user",
+				"message": map[string]interface{}{
+					"role":    "user",
+					"content": content,
+				},
+				"uuid":       msg.ID,
+				"timestamp":  ts,
+				"userType":   "external",
+				"entrypoint": "cli",
+				"cwd":        cwd,
+				"sessionId":  sessionID,
+				"version":    version,
+			}
+
+			lineBytes, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			lines = append(lines, string(lineBytes))
+			prevUUID = msg.ID
+
 		case "assistant":
-			entry.Type = "assistant"
-			var content []interface{}
+			var contentBlocks []interface{}
 
 			if msg.Thinking != "" {
-				content = append(content, map[string]string{
+				contentBlocks = append(contentBlocks, map[string]interface{}{
 					"type":     "thinking",
 					"thinking": msg.Thinking,
 				})
 			}
 
-			// Parse tool_calls if present
+			hasToolUse := false
 			if len(msg.ToolCalls) > 0 && string(msg.ToolCalls) != "null" {
 				var toolCalls []struct {
 					ID       string `json:"id"`
@@ -132,11 +160,12 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 				}
 				if json.Unmarshal(msg.ToolCalls, &toolCalls) == nil {
 					for _, tc := range toolCalls {
+						hasToolUse = true
 						var input interface{}
 						if json.Unmarshal([]byte(tc.Function.Arguments), &input) != nil {
 							input = map[string]interface{}{}
 						}
-						content = append(content, map[string]interface{}{
+						contentBlocks = append(contentBlocks, map[string]interface{}{
 							"type":  "tool_use",
 							"id":    tc.ID,
 							"name":  tc.Function.Name,
@@ -147,51 +176,104 @@ func RebuildSessionJSONL(sessionID, workDir, memberID string, messages []Session
 			}
 
 			if msg.Content != "" {
-				content = append(content, map[string]string{
+				contentBlocks = append(contentBlocks, map[string]string{
 					"type": "text",
 					"text": msg.Content,
 				})
 			}
 
-			if len(content) == 0 {
-				content = append(content, map[string]string{
+			if len(contentBlocks) == 0 {
+				contentBlocks = append(contentBlocks, map[string]string{
 					"type": "text",
 					"text": "",
 				})
 			}
 
-			entry.Message = jsonlMessage{
-				Role:    "assistant",
-				Content: content,
+			stopReason := "end_turn"
+			if hasToolUse {
+				stopReason = "tool_use"
+				lastToolAssistantUUID = msg.ID
 			}
 
+			entry := map[string]interface{}{
+				"parentUuid":  prevUUID,
+				"isSidechain": false,
+				"type":        "assistant",
+				"message": map[string]interface{}{
+					"role":          "assistant",
+					"type":          "message",
+					"content":       contentBlocks,
+					"stop_reason":   stopReason,
+					"stop_sequence": nil,
+				},
+				"uuid":       msg.ID,
+				"timestamp":  ts,
+				"userType":   "external",
+				"entrypoint": "cli",
+				"cwd":        cwd,
+				"sessionId":  sessionID,
+				"version":    version,
+			}
+
+			lineBytes, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			lines = append(lines, string(lineBytes))
+			prevUUID = msg.ID
+
 		case "tool":
-			entry.Type = "toolUseResult"
-			entry.Message = jsonlMessage{
-				Role: "assistant",
-				Content: []interface{}{
-					map[string]interface{}{
-						"type":        "tool_result",
-						"tool_use_id": msg.ToolCallID,
-						"content":     msg.Content,
+			// Tool results are type "user" with content array containing tool_result blocks
+			entry := map[string]interface{}{
+				"parentUuid":  prevUUID,
+				"isSidechain": false,
+				"type":        "user",
+				"message": map[string]interface{}{
+					"role": "user",
+					"content": []interface{}{
+						map[string]interface{}{
+							"tool_use_id": msg.ToolCallID,
+							"type":        "tool_result",
+							"content":     msg.Content,
+							"is_error":    false,
+						},
 					},
 				},
+				"uuid":      msg.ID,
+				"timestamp": ts,
+				"toolUseResult": map[string]interface{}{
+					"stdout":      msg.Content,
+					"stderr":      "",
+					"interrupted": false,
+				},
+				"userType":   "external",
+				"entrypoint": "cli",
+				"cwd":        cwd,
+				"sessionId":  sessionID,
+				"version":    version,
 			}
+			if lastToolAssistantUUID != "" {
+				entry["sourceToolAssistantUUID"] = lastToolAssistantUUID
+			}
+
+			lineBytes, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			lines = append(lines, string(lineBytes))
+			prevUUID = msg.ID
 
 		default:
 			continue
 		}
-
-		lineBytes, err := json.Marshal(entry)
-		if err != nil {
-			continue
-		}
-		lines = append(lines, string(lineBytes))
-		prevUUID = msg.ID
 	}
 
 	content := strings.Join(lines, "\n") + "\n"
-	return os.WriteFile(filePath, []byte(content), 0644)
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return err
+	}
+	log.Printf("[SessionRebuild] wrote %s (%d entries, %d bytes)", filePath, len(lines), len(content))
+	return nil
 }
 
 // CleanupSessionJSONL removes Claude CLI's session files so that
