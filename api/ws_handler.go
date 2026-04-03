@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -440,7 +439,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		}
 	}
 
-	// 2. Ensure StreamCLI is alive
+	// 2. Ensure CLI is alive
 	ensureStart := time.Now()
 	cli := h.ensureCLI(session)
 	log.Printf("[CacheProfile] ensureCLI DONE — %dms", time.Since(ensureStart).Milliseconds())
@@ -485,7 +484,7 @@ func (h *WsHandler) handleMessage(session *WsSession, sessionKey string, msg map
 		snapCh <- snapBeforeResult{snap, idMap, err}
 	}()
 
-	// 5. Send message to StreamCLI（不再被 snapshot 阻塞）
+	// 5. Send message to CLI（不再被 snapshot 阻塞）
 	pageCtx, _ := msg["pageContext"].(map[string]interface{})
 	instruction := buildInstruction(messageText, msgObj, pageCtx)
 
@@ -1244,76 +1243,6 @@ func (h *WsHandler) handleInterrupt(session *WsSession) {
 		"memberID": session.memberID,
 		"message":  "已中斷",
 	})
-}
-
-type forgedPluginValidation struct {
-	entryFile string
-}
-
-func pluginValidatorScriptPath() string {
-	if scriptPath := strings.TrimSpace(os.Getenv("PLUGIN_VALIDATOR_SCRIPT")); scriptPath != "" {
-		return scriptPath
-	}
-	return "/app/config/plugin-validator.sh"
-}
-
-func parseForgedPluginValidationOutput(output string) (*forgedPluginValidation, error) {
-	result := &forgedPluginValidation{}
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if value, ok := strings.CutPrefix(line, "ENTRY_FILE="); ok {
-			result.entryFile = strings.TrimSpace(value)
-		}
-	}
-	if result.entryFile == "" {
-		return nil, fmt.Errorf("共享驗證器未回傳入口檔資訊")
-	}
-	return result, nil
-}
-
-func validateForgedPluginDir(pluginDir string) (*forgedPluginValidation, error) {
-	output, err := exec.Command("bash", pluginValidatorScriptPath(), pluginDir).CombinedOutput()
-	trimmedOutput := strings.TrimSpace(string(output))
-	if err != nil {
-		if trimmedOutput == "" {
-			return nil, fmt.Errorf("共享驗證器執行失敗: %w", err)
-		}
-		return nil, fmt.Errorf("%s", trimmedOutput)
-	}
-	return parseForgedPluginValidationOutput(trimmedOutput)
-}
-
-func wsSessionBindingFilePath(workDir string, cliPID int) string {
-	return filepath.Join(workDir, fmt.Sprintf(".ws_session_id.%d.json", cliPID))
-}
-
-func writeWSSessionBinding(workDir string, cliPID int, sessionID string) {
-	if cliPID <= 0 || strings.TrimSpace(sessionID) == "" {
-		return
-	}
-	payload, err := json.Marshal(map[string]interface{}{
-		"sessionID": sessionID,
-		"updatedAt": time.Now().UnixMilli(),
-	})
-	if err != nil {
-		log.Printf("[WS] failed to marshal ws session binding: %v", err)
-		return
-	}
-	if err := os.WriteFile(wsSessionBindingFilePath(workDir, cliPID), payload, 0644); err != nil {
-		log.Printf("[WS] failed to write ws session binding: %v", err)
-	}
-}
-
-func clearWSSessionBinding(workDir string, cliPID int) {
-	if cliPID <= 0 {
-		return
-	}
-	if err := os.Remove(wsSessionBindingFilePath(workDir, cliPID)); err != nil && !os.IsNotExist(err) {
-		log.Printf("[WS] failed to clear ws session binding: %v", err)
-	}
 }
 
 // sanitizePluginDir 將 forgeTitle 轉換為安全的目錄名稱

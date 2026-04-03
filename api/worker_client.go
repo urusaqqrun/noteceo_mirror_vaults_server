@@ -162,6 +162,10 @@ func (w *WorkerClient) SendMessageSSE(ctx context.Context, req SendMessageReq) (
 			}
 			ch <- executor.StreamEvent{Type: ev.Type, Data: ev.Data}
 		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("[WorkerClient] SSE read error: %v", err)
+			ch <- executor.StreamEvent{Type: "error", Data: fmt.Sprintf("SSE read error: %v", err)}
+		}
 	}()
 	return ch, nil
 }
@@ -199,6 +203,11 @@ func (w *WorkerClient) ForgeSSE(ctx context.Context, req ForgeReq) (<-chan json.
 			}
 			data := strings.TrimPrefix(line, "data: ")
 			ch <- json.RawMessage(data)
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("[WorkerClient] Forge SSE read error: %v", err)
+			errMsg, _ := json.Marshal(map[string]string{"type": "error", "error": fmt.Sprintf("SSE read error: %v", err)})
+			ch <- json.RawMessage(errMsg)
 		}
 	}()
 	return ch, nil
