@@ -65,6 +65,18 @@ func (h *ServiceHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *ServiceHandler) HandleSvcRequest(w http.ResponseWriter, r *http.Request) {
+	// CORS for Electron desktop (localhost:3000) and web
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-User-ID")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	}
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	path := strings.TrimPrefix(r.URL.Path, "/svc/")
 	parts := strings.SplitN(path, "/", 3)
 	if len(parts) < 2 {
