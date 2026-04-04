@@ -99,7 +99,10 @@ func main() {
 	skillHandler := api.NewSkillHandler(vaultFS)
 	skillHandler.RegisterRoutes(mux)
 
-	pluginHandler := api.NewPluginHandler(vaultFS, pgStore, vaultLock, projector, svcHandler)
+	gitHandler := api.NewPluginGitHandler(cfg.VaultRoot, vaultLock, workerClient)
+	gitHandler.RegisterRoutes(mux)
+
+	pluginHandler := api.NewPluginHandler(vaultFS, pgStore, vaultLock, projector, svcHandler, gitHandler)
 	pluginHandler.RegisterRoutes(mux)
 
 	vaultSyncHandler := api.NewVaultSyncHandler(vaultFS, cfg.VaultRoot, nil, workerClient)

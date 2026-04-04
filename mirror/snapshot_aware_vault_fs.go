@@ -129,7 +129,14 @@ func isSnapshotIgnored(relPath string) bool {
 	if relPath == "CLAUDE.md" || relPath == ".vault_initialized" {
 		return true
 	}
-	return strings.HasPrefix(relPath, ".CubeLV/")
+	if strings.HasPrefix(relPath, ".CubeLV/") {
+		return true
+	}
+	// plugins/ 由 Git 管理，不追蹤 snapshot
+	if strings.HasPrefix(relPath, "plugins/") {
+		return true
+	}
+	return false
 }
 
 func extractDocID(content []byte, filePath string) string {

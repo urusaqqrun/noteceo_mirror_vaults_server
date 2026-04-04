@@ -70,7 +70,7 @@ func (h *VaultSyncHandler) HandleSnapshot(w http.ResponseWriter, r *http.Request
 		if info.IsDir() {
 			name := info.Name()
 			// 排除不同步的目錄
-			if name == "node_modules" || name == ".sync" {
+			if name == "node_modules" || name == ".sync" || name == ".git" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -83,8 +83,8 @@ func (h *VaultSyncHandler) HandleSnapshot(w http.ResponseWriter, r *http.Request
 		}
 		relPath = filepath.ToSlash(relPath)
 
-		// 排除 bundle.js
-		if strings.HasSuffix(relPath, "/bundle.js") && strings.HasPrefix(relPath, "plugins/") {
+		// plugins/ 由 Git 管理，不在 snapshot 中
+		if strings.HasPrefix(relPath, "plugins/") {
 			return nil
 		}
 
@@ -176,6 +176,12 @@ func (h *VaultSyncHandler) HandleFileUpload(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// plugins/ 走 Git API，不走 vault file API
+	if strings.HasPrefix(filePath, "plugins/") {
+		http.Error(w, "plugins/ files must use /api/vault/plugins/git/push", 400)
+		return
+	}
+
 	// 讀取 body
 	content, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024)) // max 10MB
 	if err != nil {
@@ -217,29 +223,6 @@ func (h *VaultSyncHandler) HandleFileUpload(w http.ResponseWriter, r *http.Reque
 		})
 	}
 
-	// 插件原始碼變更 → 觸發 CLI Worker 重新編譯
-	if h.rebuilder != nil && isPluginSource(filePath) {
-		pluginDir := extractPluginDir(filePath)
-		if pluginDir != "" {
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				defer cancel()
-				resp, err := h.rebuilder.Rebuild(ctx, RebuildReq{MemberID: memberID, PluginDir: pluginDir})
-				if err != nil {
-					log.Printf("[VaultSync] rebuild failed for %s: %v", pluginDir, err)
-					return
-				}
-				log.Printf("[VaultSync] rebuild success: %s hash=%s", pluginDir, resp.BundleHash)
-				// 通知前端 bundle 已更新
-				if h.broadcaster != nil {
-					h.broadcaster.BroadcastToMember(memberID, map[string]interface{}{
-						"type": "vault_changed",
-					})
-				}
-			}()
-		}
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "ok",
@@ -265,6 +248,12 @@ func (h *VaultSyncHandler) HandleFileDelete(w http.ResponseWriter, r *http.Reque
 
 	if strings.Contains(filePath, "..") {
 		http.Error(w, "invalid path", 400)
+		return
+	}
+
+	// plugins/ 走 Git API
+	if strings.HasPrefix(filePath, "plugins/") {
+		http.Error(w, "plugins/ files must use /api/vault/plugins/git/push", 400)
 		return
 	}
 
@@ -298,22 +287,4 @@ func (h *VaultSyncHandler) HandleFileDelete(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// isPluginSource 判斷是否是插件原始碼（plugins/ 下，不含 bundle.js / node_modules）
-func isPluginSource(filePath string) bool {
-	if !strings.HasPrefix(filePath, "plugins/") {
-		return false
-	}
-	if strings.HasSuffix(filePath, "/bundle.js") || strings.Contains(filePath, "/node_modules/") {
-		return false
-	}
-	return true
-}
-
-// extractPluginDir 從 "plugins/kanban-abc123/main.tsx" 提取 "kanban-abc123"
-func extractPluginDir(filePath string) string {
-	parts := strings.SplitN(filePath, "/", 3)
-	if len(parts) >= 2 {
-		return parts[1]
-	}
-	return ""
-}
+// isPluginSource and extractPluginDir removed — plugins now use Git API

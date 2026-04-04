@@ -21,6 +21,7 @@ type PluginHandler struct {
 	locker         vaultsync.VaultLocker
 	projector      *vaultsync.SyncEventHandler
 	serviceHandler *ServiceHandler
+	gitHandler     *PluginGitHandler
 }
 
 type PluginItemStore interface {
@@ -35,6 +36,7 @@ func NewPluginHandler(
 	locker vaultsync.VaultLocker,
 	projector *vaultsync.SyncEventHandler,
 	serviceHandler *ServiceHandler,
+	gitHandler *PluginGitHandler,
 ) *PluginHandler {
 	return &PluginHandler{
 		vaultFS:        vaultFS,
@@ -42,6 +44,7 @@ func NewPluginHandler(
 		locker:         locker,
 		projector:      projector,
 		serviceHandler: serviceHandler,
+		gitHandler:     gitHandler,
 	}
 }
 
@@ -175,6 +178,15 @@ func (h *PluginHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			Timestamp:  time.Now().UnixMilli(),
 			Version:    version,
 		})
+	}
+
+	// Git commit 刪除結果
+	if h.gitHandler != nil {
+		if hash, err := h.gitHandler.Commit(memberID, "delete: "+pluginDir, "system"); err != nil {
+			log.Printf("[PluginHandler] git commit failed: %v", err)
+		} else if hash != "" {
+			log.Printf("[PluginHandler] git commit: %s", hash)
+		}
 	}
 
 	log.Printf("[PluginHandler] DELETE done: member=%s itemID=%s pluginDir=%s version=%d", memberID, req.ItemID, pluginDir, version)
