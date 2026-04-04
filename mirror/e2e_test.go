@@ -28,13 +28,13 @@ func TestE2E_ExportItem_ThenImport_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Path != "user1/_unsorted/筆記/新格式筆記.json" {
+	if result.Path != "user1/NOTE/筆記/新格式筆記.json" {
 		t.Fatalf("unexpected path: %q", result.Path)
 	}
 
 	importer := NewImporter(fs)
 	entries, err := importer.ProcessDiff("user1",
-		[]string{"_unsorted/筆記/新格式筆記.json"}, nil, nil, nil, nil)
+		[]string{"NOTE/筆記/新格式筆記.json"}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestE2E_ExportItem_EmptyName_UsesID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expectedPath := "_unsorted/筆記/empty-name-id.json"
+	expectedPath := "NOTE/筆記/empty-name-id.json"
 	if !fs.Exists("user1/" + expectedPath) {
 		t.Fatalf("file should exist at %q, got path %q", expectedPath, result.Path)
 	}
@@ -119,13 +119,13 @@ func TestE2E_ChildNoteUsesParentContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !fs.Exists("user1/_unsorted/工作.json") {
+	if !fs.Exists("user1/NOTE/工作.json") {
 		t.Fatal("folder json should exist")
 	}
-	if !fs.Exists("user1/_unsorted/工作/筆記A.json") {
+	if !fs.Exists("user1/NOTE/工作/筆記A.json") {
 		t.Fatal("parent note json should exist")
 	}
-	if !fs.Exists("user1/_unsorted/工作/筆記A/A評論.json") {
+	if !fs.Exists("user1/NOTE/工作/筆記A/A評論.json") {
 		t.Fatal("child note should exist under parent container")
 	}
 }
@@ -160,10 +160,10 @@ func TestE2E_RenameParentMovesChildContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if fs.Exists("user1/_unsorted/工作/筆記A") || fs.Exists("user1/_unsorted/工作/筆記A.json") {
+	if fs.Exists("user1/NOTE/工作/筆記A") || fs.Exists("user1/NOTE/工作/筆記A.json") {
 		t.Fatal("old parent projection should be removed")
 	}
-	if !fs.Exists("user1/_unsorted/工作/筆記B/A評論.json") {
+	if !fs.Exists("user1/NOTE/工作/筆記B/A評論.json") {
 		t.Fatal("child container should move with parent rename")
 	}
 }

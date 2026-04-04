@@ -38,10 +38,11 @@ func NewPathResolver(nodes []TreeNode) *PathResolver {
 }
 
 // ResolvePath 解析 item 作為子項容器時的目錄路徑（不含 vaultRoot）。
-// 回傳格式：`NOTE/工作`、`NOTE/工作/筆記A`。
+// 成功回傳格式：`NOTE/工作`、`NOTE/工作/筆記A`。
+// 找不到、circular ref 等異常一律回傳 error，由呼叫端決定 fallback 位置。
 func (r *PathResolver) ResolvePath(itemID string) (string, error) {
 	if itemID == "" {
-		return "_unsorted", nil
+		return "", fmt.Errorf("empty item ID")
 	}
 
 	r.mu.RLock()
@@ -52,14 +53,14 @@ func (r *PathResolver) ResolvePath(itemID string) (string, error) {
 	_, ok := r.tree[itemID]
 	r.mu.RUnlock()
 	if !ok {
-		return "_unsorted", nil
+		return "", fmt.Errorf("%w: %q", errNodeNotFoundInTree, itemID)
 	}
 
 	r.mu.RLock()
 	parts, err := r.buildPathParts(itemID, make(map[string]bool))
 	r.mu.RUnlock()
 	if err != nil {
-		return "_unsorted", nil
+		return "", err
 	}
 
 	result := filepath.Join(parts...)
@@ -111,7 +112,8 @@ func (r *PathResolver) buildPathParts(nodeID string, visited map[string]bool) ([
 	name := sanitizeName(baseName)
 
 	if node.ParentID == nil || *node.ParentID == "" {
-		return []string{"_unsorted", name}, nil
+		typeName := resolveTypeFromItemType(node.ItemType)
+		return []string{typeName, name}, nil
 	}
 
 	parentParts, err := r.buildPathParts(*node.ParentID, visited)

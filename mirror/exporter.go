@@ -71,14 +71,20 @@ func (e *Exporter) ExportItem(userId string, item *model.Item) (ExportItemResult
 }
 
 // ResolveParentDir returns the directory path where an item's .json should be written.
+// FOLDER + 無 parent → {TYPE}/；非 FOLDER + 無 parent → {TYPE}/_unsorted/
+// 孤兒 / circular ref → {TYPE}/_unsorted/
 func (e *Exporter) ResolveParentDir(userID, parentID, itemType string) string {
+	typeFallback := filepath.Join(userID, resolveTypeFromItemType(itemType), "_unsorted")
 	if parentID == "" {
-		return filepath.Join(userID, "_unsorted")
+		if model.IsFolder(itemType) {
+			return filepath.Join(userID, resolveTypeFromItemType(itemType))
+		}
+		return typeFallback
 	}
 
 	resolvedPath, err := e.resolver.ResolvePath(parentID)
 	if err != nil || resolvedPath == "" {
-		return filepath.Join(userID, "_unsorted")
+		return typeFallback
 	}
 	return e.resolveIndexedParentDir(userID, parentID, filepath.Join(userID, resolvedPath))
 }
