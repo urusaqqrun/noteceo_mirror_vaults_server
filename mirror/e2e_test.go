@@ -50,7 +50,7 @@ func TestE2E_ExportItem_ThenImport_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestE2E_ExportItem_EmptyName_ImportClearsFallback(t *testing.T) {
+func TestE2E_ExportItem_EmptyName_UsesID(t *testing.T) {
 	fs := NewMemoryVaultFS()
 	resolver := NewPathResolver([]TreeNode{
 		{ID: "f1", Name: "筆記", ItemType: "NOTE_FOLDER", ParentID: nil},
@@ -66,24 +66,23 @@ func TestE2E_ExportItem_EmptyName_ImportClearsFallback(t *testing.T) {
 		},
 	}
 
-	_, err := exporter.ExportItem("user1", item)
+	result, err := exporter.ExportItem("user1", item)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	fallbackName := VaultFallbackName("empty-name-id")
-	path := "NOTE/筆記/" + sanitizeName(fallbackName) + ".json"
-	if !fs.Exists("user1/" + path) {
-		t.Fatalf("file with fallback name should exist at %q", path)
+	expectedPath := "NOTE/筆記/empty-name-id.json"
+	if !fs.Exists("user1/" + expectedPath) {
+		t.Fatalf("file should exist at %q, got path %q", expectedPath, result.Path)
 	}
 
 	importer := NewImporter(fs)
-	entries, err := importer.ProcessDiff("user1", []string{path}, nil, nil, nil, nil)
+	entries, err := importer.ProcessDiff("user1", []string{expectedPath}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if entries[0].ItemData.Name != "" {
-		t.Errorf("fallback name should be cleared on import, got %q", entries[0].ItemData.Name)
+		t.Errorf("empty name should stay empty on import, got %q", entries[0].ItemData.Name)
 	}
 }
 

@@ -183,7 +183,7 @@ func TestResolvePath_SpecialCharactersInName(t *testing.T) {
 	}
 }
 
-func TestResolvePath_EmptyName(t *testing.T) {
+func TestResolvePath_EmptyName_UsesID(t *testing.T) {
 	r := NewPathResolver([]TreeNode{
 		{ID: "f1", Name: "", ItemType: "NOTE_FOLDER", ParentID: nil},
 	})
@@ -191,8 +191,8 @@ func TestResolvePath_EmptyName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "NOTE/_unnamed" {
-		t.Errorf("got %q, want %q", got, "NOTE/_unnamed")
+	if got != "NOTE/f1" {
+		t.Errorf("got %q, want %q", got, "NOTE/f1")
 	}
 }
 

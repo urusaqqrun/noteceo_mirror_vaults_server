@@ -95,6 +95,7 @@ func (r *PathResolver) UpdateNode(node TreeNode) {
 }
 
 // buildPathParts 遞迴向上取得 item 容器路徑片段。
+// 命名規則：sanitizeName(name || id)，與 ExportItem 一致。
 func (r *PathResolver) buildPathParts(nodeID string, visited map[string]bool) ([]string, error) {
 	if visited[nodeID] {
 		return nil, fmt.Errorf("circular reference detected at node %q", nodeID)
@@ -106,7 +107,11 @@ func (r *PathResolver) buildPathParts(nodeID string, visited map[string]bool) ([
 		return nil, fmt.Errorf("%w: %q", errNodeNotFoundInTree, nodeID)
 	}
 
-	name := sanitizeName(node.Name)
+	baseName := node.Name
+	if baseName == "" {
+		baseName = node.ID
+	}
+	name := sanitizeName(baseName)
 
 	if node.ParentID == nil || *node.ParentID == "" {
 		typeName := resolveTypeFromItemType(node.ItemType)

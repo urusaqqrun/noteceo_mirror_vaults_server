@@ -27,7 +27,7 @@ func TestItemToMirrorData_BasicConversion(t *testing.T) {
 	}
 }
 
-func TestItemToMirrorData_EmptyNameFallback(t *testing.T) {
+func TestItemToMirrorData_EmptyNamePreserved(t *testing.T) {
 	item := &model.Item{
 		ID:     "abc123",
 		Name:   "",
@@ -35,8 +35,8 @@ func TestItemToMirrorData_EmptyNameFallback(t *testing.T) {
 		Fields: map[string]interface{}{},
 	}
 	data := ItemToMirrorData(item)
-	if data.Name != VaultFallbackName("abc123") {
-		t.Fatalf("empty name should use fallback, got %q", data.Name)
+	if data.Name != "" {
+		t.Fatalf("empty name should be preserved (filename uses ID), got %q", data.Name)
 	}
 }
 

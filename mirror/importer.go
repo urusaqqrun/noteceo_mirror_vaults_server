@@ -132,10 +132,11 @@ func (imp *Importer) parseFile(userId, path string, action ImportAction) (Import
 		}
 	}
 
-	// vault fallback name 不回寫到 DB
+	// Legacy: 舊版 vault 產生的 fallback name 不回寫到 DB
 	if IsVaultFallbackName(mirrorItem.Name, mirrorItem.ID) {
 		mirrorItem.Name = ""
 	}
+	// 新版：JSON 的 name 為空時直接保留（檔名用 id，JSON 保持原始值）
 
 	return ImportEntry{
 		Action:     action,

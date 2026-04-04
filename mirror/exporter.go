@@ -34,7 +34,8 @@ type ExportItemResult struct {
 	IsFolder bool
 }
 
-// ExportItem 通用匯出：每個 item 都對應一個 name.json。
+// ExportItem 通用匯出：每個 item 都對應一個 .json 檔。
+// 檔名規則：sanitizeName(name || id).json；同名衝突 → sanitizeName(name || id)_id.json
 func (e *Exporter) ExportItem(userId string, item *model.Item) (ExportItemResult, error) {
 	mirrorData := ItemToMirrorData(item)
 	parentDirPath := e.ResolveParentDir(userId, item.GetParentID(), item.Type)
@@ -42,10 +43,13 @@ func (e *Exporter) ExportItem(userId string, item *model.Item) (ExportItemResult
 		return ExportItemResult{}, fmt.Errorf("mkdir parent: %w", err)
 	}
 
-	fileName := sanitizeName(mirrorData.Name) + ".json"
+	baseName := mirrorData.Name
+	if baseName == "" {
+		baseName = mirrorData.ID
+	}
+	fileName := sanitizeName(baseName) + ".json"
 	fullPath := filepath.Join(parentDirPath, fileName)
 
-	// 檔名衝突處理：同路徑已存在且 ID 不同 → 加 ID 後綴。
 	fullPath = e.resolveCollision(fullPath, mirrorData.ID)
 
 	e.cleanupOldItemPath(userId, mirrorData.ID, fullPath)
@@ -90,8 +94,7 @@ func (e *Exporter) resolveIndexedParentDir(userID, parentID, fallbackPath string
 	return fallbackPath
 }
 
-// resolveCollision 若目標路徑已被不同 ID 佔用，加 _{id後8碼} 後綴。
-// 支援迴圈檢查：若後綴路徑也被佔用，改用完整 ID 作為後綴。
+// resolveCollision 若目標路徑已被不同 ID 佔用，加 _{id} 後綴。
 func (e *Exporter) resolveCollision(targetPath, itemID string) string {
 	if !e.fs.Exists(targetPath) {
 		return targetPath
@@ -107,33 +110,7 @@ func (e *Exporter) resolveCollision(targetPath, itemID string) string {
 
 	ext := filepath.Ext(targetPath)
 	base := strings.TrimSuffix(targetPath, ext)
-
-	// 先嘗試短後綴（ID 後 8 碼）
-	suffix := itemID
-	if len(suffix) > 8 {
-		suffix = suffix[len(suffix)-8:]
-	}
-	candidate := base + "_" + suffix + ext
-	if !e.fs.Exists(candidate) {
-		return candidate
-	}
-	if data, err := e.fs.ReadFile(candidate); err == nil {
-		if p, err := MirrorJSONToItem(data); err == nil && p.ID == itemID {
-			return candidate
-		}
-	}
-
-	// 短後綴也被佔用 → 使用完整 ID
-	candidate = base + "_" + itemID + ext
-	return candidate
-}
-
-func collisionSuffix(itemID string) string {
-	suffix := itemID
-	if len(suffix) > 8 {
-		suffix = suffix[len(suffix)-8:]
-	}
-	return suffix
+	return base + "_" + itemID + ext
 }
 
 // cleanupOldItemPath 清理同 ID 但舊位置的投影（改名/搬移情境）。

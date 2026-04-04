@@ -243,15 +243,15 @@ func TestExportItem_Collision_UsesIDSuffix(t *testing.T) {
 	if firstResult.Path != "user1/NOTE/工作/inbox.json" {
 		t.Fatalf("unexpected first item path: %q", firstResult.Path)
 	}
-	if !strings.Contains(secondResult.Path, "inbox_") {
-		t.Fatalf("expected suffixed second item path, got %q", secondResult.Path)
+	if secondResult.Path != "user1/NOTE/工作/inbox_f-b.json" {
+		t.Fatalf("expected full ID suffix, got %q", secondResult.Path)
 	}
 	if !fs.Exists(firstResult.Path) || !fs.Exists(secondResult.Path) {
 		t.Fatal("both colliding items should exist")
 	}
 }
 
-func TestExportItem_EmptyName_UsesFallback(t *testing.T) {
+func TestExportItem_EmptyName_UsesID(t *testing.T) {
 	exp, fs := newItemTestExporter()
 	item := &model.Item{
 		ID:   "abc12345",
@@ -261,13 +261,15 @@ func TestExportItem_EmptyName_UsesFallback(t *testing.T) {
 			"parentID": "f1",
 		},
 	}
-	_, err := exp.ExportItem("user1", item)
+	result, err := exp.ExportItem("user1", item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedName := VaultFallbackName("abc12345")
-	if !fs.Exists("user1/NOTE/工作/" + sanitizeName(expectedName) + ".json") {
-		t.Errorf("should use fallback name %q", expectedName)
+	if result.Path != "user1/NOTE/工作/abc12345.json" {
+		t.Errorf("empty name should use ID as filename, got %q", result.Path)
+	}
+	if !fs.Exists("user1/NOTE/工作/abc12345.json") {
+		t.Error("file should exist")
 	}
 }
 
@@ -288,9 +290,8 @@ func TestExportItem_ResolveCollision_DifferentID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// item2 的路徑應帶 id 後綴
-	if !strings.Contains(result.Path, "_ccccdddd") {
-		t.Errorf("collision should add id suffix, got path: %q", result.Path)
+	if result.Path != "user1/NOTE/工作/同名_id_ccccdddd.json" {
+		t.Errorf("collision should add full id suffix, got path: %q", result.Path)
 	}
 	if !fs.Exists(result.Path) {
 		t.Error("collision-resolved file should exist")
