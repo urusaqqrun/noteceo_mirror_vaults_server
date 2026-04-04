@@ -160,14 +160,6 @@ func (h *PluginHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[PluginHandler] removed dir: %s", pluginRoot)
 	}
 
-	serviceRoot := filepath.Join(memberID, "services", pluginDir)
-	if h.vaultFS.Exists(serviceRoot) {
-		if err := h.vaultFS.RemoveAll(serviceRoot); err != nil {
-			log.Printf("[PluginHandler] delete service dir failed: path=%s err=%v", serviceRoot, err)
-		} else {
-			log.Printf("[PluginHandler] removed service dir: %s", serviceRoot)
-		}
-	}
 	if h.serviceHandler != nil {
 		h.serviceHandler.RemoveFromRegistry(memberID, pluginDir)
 	}
@@ -216,7 +208,7 @@ func (h *PluginHandler) HandleBundleDownload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	bundlePath := filepath.Join(memberID, "plugins", pluginDir, "bundle.js")
+	bundlePath := filepath.Join(memberID, "plugins", pluginDir, "frontend", "bundle.js")
 	data, err := h.vaultFS.ReadFile(bundlePath)
 	if err != nil {
 		log.Printf("[PluginHandler] bundle not found: member=%s plugin=%s err=%v", memberID, pluginDir, err)
@@ -251,7 +243,7 @@ func (h *PluginHandler) HandleCSSDownload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	cssPath := filepath.Join(memberID, "plugins", pluginDir, "bundle.css")
+	cssPath := filepath.Join(memberID, "plugins", pluginDir, "frontend", "bundle.css")
 	data, err := h.vaultFS.ReadFile(cssPath)
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)

@@ -115,7 +115,7 @@ func (h *ServiceHandler) HandleSvcRequest(w http.ResponseWriter, r *http.Request
 }
 
 func (h *ServiceHandler) loadManifest(memberID, serviceDir string) (*serviceManifest, error) {
-	manifestPath := filepath.Join(h.vaultRoot, memberID, "services", serviceDir, "manifest.json")
+	manifestPath := filepath.Join(h.vaultRoot, memberID, "plugins", serviceDir, "backend", "manifest.json")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, err
