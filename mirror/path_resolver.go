@@ -93,7 +93,7 @@ func (r *PathResolver) UpdateNode(node TreeNode) {
 }
 
 // buildPathParts 遞迴向上取得 item 容器路徑片段。
-// 命名規則：sanitizeName(name || id)，與 ExportItem 一致。
+// 命名規則：有 name → sanitizeName(name) + "_" + id；無 name → id
 func (r *PathResolver) buildPathParts(nodeID string, visited map[string]bool) ([]string, error) {
 	if visited[nodeID] {
 		return nil, fmt.Errorf("circular reference detected at node %q", nodeID)
@@ -105,11 +105,7 @@ func (r *PathResolver) buildPathParts(nodeID string, visited map[string]bool) ([
 		return nil, fmt.Errorf("%w: %q", errNodeNotFoundInTree, nodeID)
 	}
 
-	baseName := node.Name
-	if baseName == "" {
-		baseName = node.ID
-	}
-	name := sanitizeName(baseName)
+	name := buildNameWithID(node.Name, node.ID)
 
 	if node.ParentID == nil || *node.ParentID == "" {
 		typeName := resolveTypeFromItemType(node.ItemType)
@@ -142,6 +138,20 @@ func resolveTypeFromItemType(itemType string) string {
 // SanitizeItemName 將不安全的檔名字元替換為底線（exported 供其他 package 使用）
 func SanitizeItemName(name string) string {
 	return sanitizeName(name)
+}
+
+// buildNameWithID 產生目錄名或檔案 basename（不含 .json）。
+// 有 name → sanitizeName(name) + "_" + id；無 name → id
+func buildNameWithID(name, id string) string {
+	if name == "" || name == id {
+		return id
+	}
+	return sanitizeName(name) + "_" + id
+}
+
+// BuildFileNameWithID 產生 vault 檔案名稱（含 .json）。exported 供外部使用。
+func BuildFileNameWithID(name, id string) string {
+	return buildNameWithID(name, id) + ".json"
 }
 
 func sanitizeName(name string) string {
