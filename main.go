@@ -71,19 +71,6 @@ func main() {
 	worker.SetOwnerScanLimit(cfg.SyncOwnerScanLimit)
 	worker.SetChangeBatchSize(cfg.SyncChangeBatchSize)
 
-	// === 一次性遷移：硬刪除重複 inbox/todoInbox（完成後刪除） ===
-	if affected, err := pgStore.HardDeleteDuplicateSystemFolders(ctx); err != nil {
-		log.Printf("[HardDelete] 失敗: %v", err)
-	} else if len(affected) > 0 {
-		log.Printf("[HardDelete] %d 用戶受影響，重建 vault", len(affected))
-		for _, uid := range affected {
-			if err := vaultsync.ExportFullVault(ctx, vaultFS, pgStore, uid); err != nil {
-				log.Printf("[HardDelete] 用戶 %s 重建失敗: %v", uid, err)
-			}
-		}
-		log.Println("[HardDelete] 完成")
-	}
-
 	// WorkerClient（僅 Rebuild，用於 VaultSyncHandler 觸發插件編譯）
 	var workerClient *api.WorkerClient
 	workerURL := os.Getenv("CLI_WORKER_URL")
