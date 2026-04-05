@@ -71,19 +71,6 @@ func main() {
 	worker.SetOwnerScanLimit(cfg.SyncOwnerScanLimit)
 	worker.SetChangeBatchSize(cfg.SyncChangeBatchSize)
 
-	// === 一次性遷移：合併重複 inbox/todoInbox（完成後刪除） ===
-	if affectedUsers, err := pgStore.MergeDuplicateSystemFolders(ctx); err != nil {
-		log.Printf("[MergeInbox] 合併失敗: %v", err)
-	} else if len(affectedUsers) > 0 {
-		log.Printf("[MergeInbox] %d 用戶受影響，開始重建 vault", len(affectedUsers))
-		for _, uid := range affectedUsers {
-			if err := vaultsync.ExportFullVault(ctx, vaultFS, pgStore, uid); err != nil {
-				log.Printf("[MergeInbox] 用戶 %s 重建失敗: %v", uid, err)
-			}
-		}
-		log.Println("[MergeInbox] 完成")
-	}
-
 	// WorkerClient（僅 Rebuild，用於 VaultSyncHandler 觸發插件編譯）
 	var workerClient *api.WorkerClient
 	workerURL := os.Getenv("CLI_WORKER_URL")

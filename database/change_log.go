@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -199,118 +198,6 @@ func (s *PgStore) RecordCursorError(ctx context.Context, ownerUserID, leaseOwner
 		return fmt.Errorf("record cursor error: %w", err)
 	}
 	return nil
-}
-
-// MergeDuplicateSystemFolders 合併每個用戶重複的 inbox/todoInbox（遷移用，完成後刪除）
-func (s *PgStore) MergeDuplicateSystemFolders(ctx context.Context) ([]string, error) {
-	type folderRow struct {
-		userID     string
-		folderID   string
-		childCount int
-		deleted    bool
-	}
-
-	affectedUsers := make(map[string]bool)
-
-	for _, sys := range []struct{ name, itemType string }{
-		{"inbox", "NOTE_FOLDER"},
-		{"todoInbox", "TODO_FOLDER"},
-	} {
-		rows, err := s.db.QueryContext(ctx, `
-			SELECT ip.user_id, bi.id,
-			       (SELECT COUNT(*) FROM base_items c
-			        JOIN item_permissions cp ON cp.item_id = c.id AND cp.permission = 'owner'
-			        WHERE cp.user_id = ip.user_id
-			        AND c.fields->>'parentID' = bi.id
-			        AND c.deleted_at IS NULL) AS child_count,
-			       (bi.deleted_at IS NOT NULL) AS is_deleted
-			FROM base_items bi
-			JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
-			WHERE bi.name = $1 AND bi.item_type = $2
-			ORDER BY ip.user_id, child_count DESC, bi.created_at ASC`,
-			sys.name, sys.itemType)
-		if err != nil {
-			return nil, fmt.Errorf("query %s folders: %w", sys.name, err)
-		}
-
-		userFolders := make(map[string][]folderRow)
-		for rows.Next() {
-			var r folderRow
-			if err := rows.Scan(&r.userID, &r.folderID, &r.childCount, &r.deleted); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			userFolders[r.userID] = append(userFolders[r.userID], r)
-		}
-		rows.Close()
-
-		for userID, folders := range userFolders {
-			var alive []folderRow
-			for _, f := range folders {
-				if !f.deleted {
-					alive = append(alive, f)
-				}
-			}
-			if len(alive) == 0 {
-				continue
-			}
-			canonical := alive[0]
-
-			needsWork := false
-			for _, f := range folders {
-				if f.folderID != canonical.folderID && (f.childCount > 0 || !f.deleted) {
-					needsWork = true
-					break
-				}
-			}
-			if !needsWork {
-				continue
-			}
-
-			log.Printf("[MergeInbox] user=%s type=%s canonical=%s (%d children), total_folders=%d",
-				userID, sys.name, canonical.folderID, canonical.childCount, len(folders))
-
-			for _, dup := range folders {
-				if dup.folderID == canonical.folderID {
-					continue
-				}
-				if dup.childCount > 0 {
-					res, err := s.db.ExecContext(ctx, `
-						UPDATE base_items
-						SET fields = jsonb_set(fields, '{parentID}', to_jsonb($1::text)),
-						    updated_at = $4
-						WHERE id IN (
-							SELECT c.id FROM base_items c
-							JOIN item_permissions cp ON cp.item_id = c.id AND cp.permission = 'owner'
-							WHERE cp.user_id = $2
-							AND c.fields->>'parentID' = $3
-							AND c.deleted_at IS NULL
-						)`, canonical.folderID, userID, dup.folderID, time.Now().UnixMilli())
-					if err != nil {
-						log.Printf("[MergeInbox] move children %s->%s error: %v", dup.folderID, canonical.folderID, err)
-					} else if n, _ := res.RowsAffected(); n > 0 {
-						log.Printf("[MergeInbox]   moved %d children from %s to %s", n, dup.folderID, canonical.folderID)
-					}
-				}
-				if !dup.deleted {
-					_, err := s.db.ExecContext(ctx, `UPDATE base_items SET deleted_at = $1 WHERE id = $2`,
-						time.Now().UnixMilli(), dup.folderID)
-					if err != nil {
-						log.Printf("[MergeInbox] delete dup %s error: %v", dup.folderID, err)
-					} else {
-						log.Printf("[MergeInbox]   deleted duplicate %s", dup.folderID)
-					}
-				}
-			}
-			affectedUsers[userID] = true
-		}
-	}
-
-	result := make([]string, 0, len(affectedUsers))
-	for uid := range affectedUsers {
-		result = append(result, uid)
-	}
-	return result, nil
 }
 
 func (s *PgStore) GetBacklogStats(ctx context.Context) (vaultsync.BacklogStats, error) {
