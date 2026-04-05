@@ -200,6 +200,20 @@ func (s *PgStore) RecordCursorError(ctx context.Context, ownerUserID, leaseOwner
 	return nil
 }
 
+// MarkDeletedFoldersAsIsDeleted 將 deleted_at 不為空的系統資料夾補上 isDeleted=true（遷移用，完成後刪除）
+func (s *PgStore) MarkDeletedFoldersAsIsDeleted(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE base_items
+		SET fields = fields || '{"isDeleted": true}'::jsonb
+		WHERE deleted_at IS NOT NULL
+		AND name IN ('inbox', 'todoInbox')
+		AND (fields->>'isDeleted' IS NULL OR fields->>'isDeleted' != 'true')`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *PgStore) GetBacklogStats(ctx context.Context) (vaultsync.BacklogStats, error) {
 	row := s.db.QueryRowContext(ctx,
 		`WITH owner_progress AS (

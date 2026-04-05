@@ -71,6 +71,13 @@ func main() {
 	worker.SetOwnerScanLimit(cfg.SyncOwnerScanLimit)
 	worker.SetChangeBatchSize(cfg.SyncChangeBatchSize)
 
+	// === 一次性修正：已刪除的系統資料夾補上 isDeleted=true（完成後刪除） ===
+	if n, err := pgStore.MarkDeletedFoldersAsIsDeleted(ctx); err != nil {
+		log.Printf("[FixIsDeleted] 失敗: %v", err)
+	} else if n > 0 {
+		log.Printf("[FixIsDeleted] 已修正 %d 筆", n)
+	}
+
 	// WorkerClient（僅 Rebuild，用於 VaultSyncHandler 觸發插件編譯）
 	var workerClient *api.WorkerClient
 	workerURL := os.Getenv("CLI_WORKER_URL")
