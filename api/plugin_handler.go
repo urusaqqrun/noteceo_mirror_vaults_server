@@ -105,9 +105,7 @@ func (h *PluginHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	item, err := h.itemStore.GetItem(r.Context(), memberID, req.ItemID)
 	if err != nil {
-		log.Printf("[PluginHandler] get plugin item failed: member=%s item=%s err=%v", memberID, req.ItemID, err)
-		chatWriteError(w, http.StatusInternalServerError, "failed to load plugin item")
-		return
+		log.Printf("[PluginHandler] get plugin item failed (proceeding with request body): member=%s item=%s err=%v", memberID, req.ItemID, err)
 	}
 
 	pluginDir := normalizePluginDir(req.PluginDir)
