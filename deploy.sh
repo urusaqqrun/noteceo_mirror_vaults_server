@@ -219,6 +219,7 @@ else
     --task-definition "$TASK_DEFINITION_ARN" \
     --force-new-deployment \
     --enable-execute-command \
+    --health-check-grace-period-seconds 30 \
     --region "$AWS_REGION" \
     $SERVICE_REGISTRIES_ARG \
     --network-configuration \
@@ -228,6 +229,35 @@ fi
 
 # 清理
 rm -f mirror-service-task-definition-updated.json plugins-src.tar.gz
+
+# ----------------------------------------
+# 等待部署穩定 + 刷新 Router DNS 快取
+# ----------------------------------------
+echo "=== 等待 ECS 部署穩定（最多 3 分鐘）==="
+aws ecs wait services-stable \
+  --cluster "$ECS_CLUSTER" \
+  --services "$ECS_SERVICE" \
+  --region "$AWS_REGION" 2>/dev/null || true
+
+echo "=== 刷新 Router（force-redeploy，讓 Nginx 重新解析 DNS）==="
+ROUTER_SERVICE="router-service"
+ROUTER_STATUS=$(aws ecs describe-services \
+  --cluster "$ECS_CLUSTER" \
+  --services "$ROUTER_SERVICE" \
+  --region "$AWS_REGION" \
+  --query 'services[0].status' \
+  --output text 2>/dev/null || echo "")
+
+if [ "$ROUTER_STATUS" = "ACTIVE" ]; then
+  aws ecs update-service \
+    --cluster "$ECS_CLUSTER" \
+    --service "$ROUTER_SERVICE" \
+    --force-new-deployment \
+    --region "$AWS_REGION" > /dev/null
+  echo "Router 已觸發重新部署"
+else
+  echo "WARNING: Router service 不存在或非 ACTIVE，跳過"
+fi
 
 echo "=== 部署完成 ==="
 echo "您可以使用以下命令查看："
