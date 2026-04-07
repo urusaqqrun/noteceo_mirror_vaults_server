@@ -59,7 +59,7 @@ func (s *PgStore) Close() error {
 
 func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.Item, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at
+		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at, bi.linked_from
 		 FROM base_items bi
 		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
 		 WHERE bi.id = $1 AND ip.user_id = $2`,
@@ -70,7 +70,7 @@ func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.It
 
 func (s *PgStore) ListAllItems(ctx context.Context, userID string) ([]*model.Item, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at
+		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at, bi.linked_from
 		 FROM base_items bi
 		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
 		 WHERE ip.user_id = $1`,
@@ -386,10 +386,10 @@ func (s *PgStore) GetLatestSeq(ctx context.Context, userID string) (int, error) 
 // ---------------------------------------------------------------------------
 
 func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
-	var id, itemType, name, fieldsJSON string
+	var id, itemType, name, fieldsJSON, linkedFromJSON string
 	var version int
 	var createdAt, updatedAt int64
-	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt, &linkedFromJSON); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -404,6 +404,11 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 	fields["createdAt"] = fmt.Sprintf("%d", createdAt)
 	fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
 
+	var linkedFrom []interface{}
+	if err := json.Unmarshal([]byte(linkedFromJSON), &linkedFrom); err == nil && len(linkedFrom) > 0 {
+		fields["linkedFrom"] = linkedFrom
+	}
+
 	return &model.Item{
 		ID:     id,
 		Name:   name,
@@ -415,10 +420,10 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 	var out []*model.Item
 	for rows.Next() {
-		var id, itemType, name, fieldsJSON string
+		var id, itemType, name, fieldsJSON, linkedFromJSON string
 		var version int
 		var createdAt, updatedAt int64
-		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt, &linkedFromJSON); err != nil {
 			log.Printf("[scanItems] scan error: %v", err)
 			continue
 		}
@@ -429,6 +434,11 @@ func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 		fields["usn"] = version
 		fields["createdAt"] = fmt.Sprintf("%d", createdAt)
 		fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
+
+		var linkedFrom []interface{}
+		if err := json.Unmarshal([]byte(linkedFromJSON), &linkedFrom); err == nil && len(linkedFrom) > 0 {
+			fields["linkedFrom"] = linkedFrom
+		}
 
 		out = append(out, &model.Item{
 			ID:     id,

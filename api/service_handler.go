@@ -300,13 +300,36 @@ func (h *ServiceHandler) proxyToWorker(w http.ResponseWriter, r *http.Request, m
 	proxy.ServeHTTP(w, r)
 }
 
-// RemoveFromRegistry 從 registry 移除指定 service，讓下次請求重新 ensure
-func (h *ServiceHandler) RemoveFromRegistry(memberID, serviceDir string) {
+// StopAndRemove 呼叫 plugin_runtime_server 的 stop API 停掉後端 process，並從 registry 移除
+func (h *ServiceHandler) StopAndRemove(memberID, serviceDir string) {
 	key := memberID + ":" + serviceDir
 	h.mu.Lock()
 	delete(h.registry, key)
 	h.mu.Unlock()
 	log.Printf("[ServiceHandler] removed from registry: %s", key)
+
+	reqBody, _ := json.Marshal(map[string]string{
+		"memberID":   memberID,
+		"serviceDir": serviceDir,
+	})
+	req, err := http.NewRequest("POST", h.workerBaseURL+"/internal/service/stop", bytes.NewReader(reqBody))
+	if err != nil {
+		log.Printf("[ServiceHandler] stop request build failed: %s: %v", key, err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if h.workerSecret != "" {
+		req.Header.Set("X-Internal-Secret", h.workerSecret)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[ServiceHandler] stop request failed: %s: %v", key, err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	log.Printf("[ServiceHandler] stop response: %s: %d %s", key, resp.StatusCode, string(body))
 }
 
 func (h *ServiceHandler) registryCleaner() {
