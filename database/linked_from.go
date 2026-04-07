@@ -28,9 +28,6 @@ func extractLinkTargetIDs(content string) map[string]bool {
 }
 
 func buildBacklinkString(sourceName, sourceType, sourceID string) string {
-	if sourceName == "" {
-		sourceName = sourceID
-	}
 	return fmt.Sprintf("[%s](cubelv://%s/%s)", sourceName, strings.ToLower(sourceType), sourceID)
 }
 

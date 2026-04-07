@@ -139,7 +139,7 @@ func (s *PgStore) UpsertItem(ctx context.Context, userID string, doc map[string]
 		}
 	}
 
-	delete(fields, "linkedFrom")
+ㄑ	delete(fields, "linkedFrom")
 
 	fieldsJSON, err := json.Marshal(fields)
 	if err != nil {
