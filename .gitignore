@@ -103,3 +103,4 @@ mirror-service-task-definition-updated.json
 /load_testing/
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,macos,go
+plugins-src.tar.gz
