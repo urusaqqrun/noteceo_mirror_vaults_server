@@ -370,6 +370,17 @@ func (m *MemoryVaultFS) Walk(root string, fn filepath.WalkFunc) error {
 	return nil
 }
 
+// ListAllFiles returns all file paths (for test debugging).
+func (m *MemoryVaultFS) ListAllFiles() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []string
+	for k := range m.files {
+		out = append(out, k)
+	}
+	return out
+}
+
 func (m *MemoryVaultFS) ensureDirLocked(path string) {
 	parts := strings.Split(path, "/")
 	for i := range parts {

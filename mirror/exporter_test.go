@@ -334,6 +334,47 @@ func TestDeleteItem_RemovesLeaf(t *testing.T) {
 	}
 }
 
+func TestDeleteItem_RenamesSoleSiblingBack(t *testing.T) {
+	id1 := "aaaaaaaaaaaaaaaaaaaaaaaa"
+	id2 := "bbbbbbbbbbbbbbbbbbbbbbbb"
+	mfs := NewMemoryVaultFS()
+	resolver := NewPathResolver([]TreeNode{
+		{ID: "f1", Name: "工作", ItemType: "NOTE_FOLDER", ParentID: nil},
+		{ID: id1, Name: "同名", ItemType: "NOTE", ParentID: strPtr("f1")},
+		{ID: id2, Name: "同名", ItemType: "NOTE", ParentID: strPtr("f1")},
+	})
+	exp := NewExporter(mfs, resolver)
+	fs := mfs
+	a := &model.Item{ID: id1, Name: "同名", Type: "NOTE", Fields: map[string]interface{}{"parentID": "f1"}}
+	b := &model.Item{ID: id2, Name: "同名", Type: "NOTE", Fields: map[string]interface{}{"parentID": "f1"}}
+	if _, err := exp.ExportItem("user1", a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exp.ExportItem("user1", b); err != nil {
+		t.Fatal(err)
+	}
+	pathA := "user1/NOTE/工作/同名_" + id1 + ".json"
+	pathB := "user1/NOTE/工作/同名_" + id2 + ".json"
+	if !fs.Exists(pathA) {
+		t.Fatalf("id1 should have _id suffix, files: %v", fs.ListAllFiles())
+	}
+	if !fs.Exists(pathB) {
+		t.Fatal("id2 should have _id suffix")
+	}
+	if err := exp.DeleteItem("user1", id1); err != nil {
+		t.Fatal(err)
+	}
+	if fs.Exists(pathA) {
+		t.Error("id1 should be deleted")
+	}
+	if fs.Exists(pathB) {
+		t.Error("sole remaining sibling should be renamed back (no _id)")
+	}
+	if !fs.Exists("user1/NOTE/工作/同名.json") {
+		t.Errorf("sole remaining sibling should be 同名.json, files: %v", fs.ListAllFiles())
+	}
+}
+
 func TestExportItem_RenameCleanupOldPath(t *testing.T) {
 	exp, fs := newItemTestExporter()
 	item := &model.Item{

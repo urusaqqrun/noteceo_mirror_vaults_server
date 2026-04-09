@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -168,6 +169,7 @@ func (h *SyncEventHandler) handleItemEvent(ctx context.Context, event SyncEvent)
 
 // deleteItemByDocID 刪除 item 對應的 .json 與同名子目錄。
 // 若為 PLUGIN item，額外清理 plugins/{pluginDir}/ 目錄。
+// 刪除後若同目錄下同名檔案從多個變成一個，自動 rename 回不帶 _id 的名稱。
 func (h *SyncEventHandler) deleteItemByDocID(ctx context.Context, userID, docID string) error {
 	target, _, err := h.findPathByDocID(ctx, userID, docID)
 	if err != nil {
@@ -177,12 +179,14 @@ func (h *SyncEventHandler) deleteItemByDocID(ctx context.Context, userID, docID 
 		return nil
 	}
 
-	// PLUGIN item：刪除前讀取 pluginDir，之後清理 plugins/ 下的原始碼
+	// 刪除前讀取 JSON，取得 name（供 sibling rename）和 pluginDir
+	var itemName string
 	var pluginDirToClean string
 	if h.fs.Exists(target) {
 		if data, readErr := h.fs.ReadFile(target); readErr == nil {
 			var obj map[string]interface{}
 			if json.Unmarshal(data, &obj) == nil {
+				itemName, _ = obj["name"].(string)
 				if itemType, _ := obj["itemType"].(string); itemType == "PLUGIN" {
 					if pd, _ := obj["pluginDir"].(string); pd != "" {
 						pluginDirToClean = filepath.Join(userID, "plugins", pd)
@@ -207,9 +211,72 @@ func (h *SyncEventHandler) deleteItemByDocID(ctx context.Context, userID, docID 
 			log.Printf("[SyncEventHandler] cleaned plugin dir: %s", pluginDirToClean)
 		}
 	}
+
+	// 刪除後檢查是否需要 rename 剩餘同名 sibling
+	if itemName != "" {
+		parentDir := filepath.Dir(target)
+		h.renameSoleSiblingIfNeeded(parentDir, itemName)
+	}
+
 	h.InvalidateResolver(userID)
+	h.InvalidateDocPathIndex(userID)
 	h.removeDocPath(userID, docID)
 	return nil
+}
+
+var hexIDPattern = regexp.MustCompile(`^[0-9a-f]{24}$`)
+
+// renameSoleSiblingIfNeeded 檢查 parentDir 下同名帶 _id 後綴的檔案；
+// 若只剩一個，自動 rename 回不帶 _id 的名稱（含同名子目錄）。
+func (h *SyncEventHandler) renameSoleSiblingIfNeeded(parentDir, itemName string) {
+	sanitized := mirror.SanitizeItemName(itemName)
+	prefix := sanitized + "_"
+
+	var matches []string
+	_ = h.fs.Walk(parentDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		// 只看 parentDir 下的直接子項
+		if filepath.Dir(path) != parentDir {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		base := strings.TrimSuffix(filepath.Base(path), ".json")
+		if strings.HasPrefix(base, prefix) {
+			suffix := base[len(prefix):]
+			if hexIDPattern.MatchString(suffix) {
+				matches = append(matches, path)
+			}
+		}
+		return nil
+	})
+
+	if len(matches) != 1 {
+		return
+	}
+
+	oldPath := matches[0]
+	newPath := filepath.Join(parentDir, sanitized+".json")
+	if oldPath == newPath || h.fs.Exists(newPath) {
+		return
+	}
+	if err := h.fs.Rename(oldPath, newPath); err != nil {
+		log.Printf("[SyncEventHandler] rename sibling %s → %s failed: %v", oldPath, newPath, err)
+		return
+	}
+
+	// 同名子目錄也 rename
+	oldDir := strings.TrimSuffix(oldPath, ".json")
+	newDir := strings.TrimSuffix(newPath, ".json")
+	if oldDir != oldPath && h.fs.Exists(oldDir) {
+		if err := h.fs.Rename(oldDir, newDir); err != nil {
+			log.Printf("[SyncEventHandler] rename sibling dir %s → %s failed: %v", oldDir, newDir, err)
+		}
+	}
+	log.Printf("[SyncEventHandler] renamed sole sibling: %s → %s", filepath.Base(oldPath), filepath.Base(newPath))
 }
 
 // exportByDocID 從 DB 讀取 item 後匯出到 Vault

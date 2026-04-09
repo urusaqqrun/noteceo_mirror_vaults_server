@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/urusaqqrun/vault-mirror-service/model"
 	"golang.org/x/sync/errgroup"
 )
+
+var hexIDRe = regexp.MustCompile(`^[0-9a-f]{24}$`)
 
 // Exporter 負責資料庫資料 → Vault 檔案的匯出
 type Exporter struct {
@@ -161,6 +164,7 @@ func (e *Exporter) cleanupOldItemPath(userID, docID, newPath string) {
 }
 
 // DeleteItem 通用刪除：刪除 item 的 .json 與同名子目錄。
+// 刪除後若同目錄下同名檔案從多個變成一個，自動 rename 回不帶 _id 的名稱。
 func (e *Exporter) DeleteItem(userId, itemID string) error {
 	e.ensureDocPathIndex(userId)
 	oldPath := e.getIndexedPath(userId, itemID)
@@ -168,7 +172,15 @@ func (e *Exporter) DeleteItem(userId, itemID string) error {
 		return nil
 	}
 
+	// 刪除前取得 item name（用於後續 sibling rename 判斷）
+	var itemName string
 	if e.fs.Exists(oldPath) {
+		if data, readErr := e.fs.ReadFile(oldPath); readErr == nil {
+			var obj map[string]interface{}
+			if json.Unmarshal(data, &obj) == nil {
+				itemName, _ = obj["name"].(string)
+			}
+		}
 		if err := e.fs.Remove(oldPath); err != nil {
 			return err
 		}
@@ -180,7 +192,57 @@ func (e *Exporter) DeleteItem(userId, itemID string) error {
 		}
 	}
 	e.removeIndexedPath(userId, itemID)
+	e.resolver.RemoveNode(itemID)
+
+	if itemName != "" {
+		e.renameSoleSiblingAfterDelete(userId, filepath.Dir(oldPath), itemName)
+	}
+
 	return nil
+}
+
+// renameSoleSiblingAfterDelete 在刪除後，若同目錄只剩一個同名帶 _id 的檔案，rename 回不帶 _id。
+func (e *Exporter) renameSoleSiblingAfterDelete(userID, parentDir, itemName string) {
+	sanitized := sanitizeName(itemName)
+	prefix := sanitized + "_"
+
+	var matches []string
+	_ = e.fs.Walk(parentDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info == nil || filepath.Dir(path) != parentDir {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		base := strings.TrimSuffix(filepath.Base(path), ".json")
+		if strings.HasPrefix(base, prefix) {
+			suffix := base[len(prefix):]
+			if hexIDRe.MatchString(suffix) {
+				matches = append(matches, path)
+			}
+		}
+		return nil
+	})
+
+	if len(matches) != 1 {
+		return
+	}
+	oldPath := matches[0]
+	newPath := filepath.Join(parentDir, sanitized+".json")
+	if oldPath == newPath || e.fs.Exists(newPath) {
+		return
+	}
+	if err := e.fs.Rename(oldPath, newPath); err != nil {
+		return
+	}
+	oldDir := strings.TrimSuffix(oldPath, ".json")
+	newDir := strings.TrimSuffix(newPath, ".json")
+	if oldDir != oldPath && e.fs.Exists(oldDir) {
+		_ = e.fs.Rename(oldDir, newDir)
+	}
+	oldBase := strings.TrimSuffix(filepath.Base(oldPath), ".json")
+	sibID := oldBase[len(prefix):]
+	e.setIndexedPath(userID, sibID, newPath)
 }
 
 // ExportBatch 使用 errgroup 並行寫入多個檔案到 EFS（上限 8 goroutines）
