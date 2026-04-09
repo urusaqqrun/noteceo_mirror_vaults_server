@@ -59,7 +59,7 @@ func (s *PgStore) Close() error {
 
 func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.Item, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at, bi.linked_from
+		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at, bi.backlinks
 		 FROM base_items bi
 		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
 		 WHERE bi.id = $1 AND ip.user_id = $2`,
@@ -70,7 +70,7 @@ func (s *PgStore) GetItem(ctx context.Context, userID, itemID string) (*model.It
 
 func (s *PgStore) ListAllItems(ctx context.Context, userID string) ([]*model.Item, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at, bi.linked_from
+		`SELECT bi.id, bi.item_type, bi.name, bi.fields, bi.version, bi.created_at, bi.updated_at, bi.backlinks
 		 FROM base_items bi
 		 JOIN item_permissions ip ON ip.item_id = bi.id AND ip.permission = 'owner'
 		 WHERE ip.user_id = $1`,
@@ -139,7 +139,7 @@ func (s *PgStore) UpsertItem(ctx context.Context, userID string, doc map[string]
 		}
 	}
 
-ㄑ	delete(fields, "linkedFrom")
+	delete(fields, "backlinks")
 
 	fieldsJSON, err := json.Marshal(fields)
 	if err != nil {
@@ -153,6 +153,7 @@ func (s *PgStore) UpsertItem(ctx context.Context, userID string, doc map[string]
 	defer tx.Rollback()
 
 	var oldContent string
+	var oldSubjectID string
 	var oldFieldsJSON string
 	err = tx.QueryRowContext(ctx,
 		`SELECT COALESCE(fields, '{}') FROM base_items WHERE id = $1`, id,
@@ -161,6 +162,7 @@ func (s *PgStore) UpsertItem(ctx context.Context, userID string, doc map[string]
 		var oldFields map[string]interface{}
 		if json.Unmarshal([]byte(oldFieldsJSON), &oldFields) == nil {
 			oldContent, _ = oldFields["content"].(string)
+			oldSubjectID, _ = oldFields["subjectID"].(string)
 		}
 	}
 
@@ -203,6 +205,9 @@ func (s *PgStore) UpsertItem(ctx context.Context, userID string, doc map[string]
 		s.ProcessBacklinksOnContentChange(ctx, tx, id, name, itemType, oldContent, newContent, userID)
 	}
 
+	newSubjectID, _ := fields["subjectID"].(string)
+	s.ProcessBacklinksOnSubjectChange(ctx, tx, id, oldSubjectID, newSubjectID, userID)
+
 	return tx.Commit()
 }
 
@@ -226,6 +231,20 @@ func (s *PgStore) DeleteItemDoc(ctx context.Context, userID, docID string, versi
 	}
 	if !exists {
 		return nil
+	}
+
+	// 刪除前清除 backlinks：subjectID → child backlink、content → mention backlinks
+	var delFieldsJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(fields, '{}') FROM base_items WHERE id = $1`, docID).Scan(&delFieldsJSON); err == nil {
+		var delFields map[string]interface{}
+		if json.Unmarshal([]byte(delFieldsJSON), &delFields) == nil {
+			if subjectID, ok := delFields["subjectID"].(string); ok && subjectID != "" {
+				s.removeBacklink(ctx, tx, subjectID, docID, "child", userID)
+			}
+			if content, ok := delFields["content"].(string); ok && content != "" {
+				s.ProcessBacklinksOnContentChange(ctx, tx, docID, "", "", content, "", userID)
+			}
+		}
 	}
 
 	_, err = tx.ExecContext(ctx,
@@ -405,10 +424,10 @@ func (s *PgStore) GetLatestSeq(ctx context.Context, userID string) (int, error) 
 // ---------------------------------------------------------------------------
 
 func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
-	var id, itemType, name, fieldsJSON, linkedFromJSON string
+	var id, itemType, name, fieldsJSON, backlinksJSON string
 	var version int
 	var createdAt, updatedAt int64
-	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt, &linkedFromJSON); err != nil {
+	if err := row.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt, &backlinksJSON); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -423,9 +442,9 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 	fields["createdAt"] = fmt.Sprintf("%d", createdAt)
 	fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
 
-	var linkedFrom []interface{}
-	if err := json.Unmarshal([]byte(linkedFromJSON), &linkedFrom); err == nil && len(linkedFrom) > 0 {
-		fields["linkedFrom"] = linkedFrom
+	var backlinks []interface{}
+	if err := json.Unmarshal([]byte(backlinksJSON), &backlinks); err == nil && len(backlinks) > 0 {
+		fields["backlinks"] = backlinks
 	}
 
 	return &model.Item{
@@ -439,10 +458,10 @@ func (s *PgStore) scanItem(row *sql.Row) (*model.Item, error) {
 func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 	var out []*model.Item
 	for rows.Next() {
-		var id, itemType, name, fieldsJSON, linkedFromJSON string
+		var id, itemType, name, fieldsJSON, backlinksJSON string
 		var version int
 		var createdAt, updatedAt int64
-		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt, &linkedFromJSON); err != nil {
+		if err := rows.Scan(&id, &itemType, &name, &fieldsJSON, &version, &createdAt, &updatedAt, &backlinksJSON); err != nil {
 			log.Printf("[scanItems] scan error: %v", err)
 			continue
 		}
@@ -454,9 +473,9 @@ func (s *PgStore) scanItems(rows *sql.Rows) ([]*model.Item, error) {
 		fields["createdAt"] = fmt.Sprintf("%d", createdAt)
 		fields["updatedAt"] = fmt.Sprintf("%d", updatedAt)
 
-		var linkedFrom []interface{}
-		if err := json.Unmarshal([]byte(linkedFromJSON), &linkedFrom); err == nil && len(linkedFrom) > 0 {
-			fields["linkedFrom"] = linkedFrom
+		var backlinks []interface{}
+		if err := json.Unmarshal([]byte(backlinksJSON), &backlinks); err == nil && len(backlinks) > 0 {
+			fields["backlinks"] = backlinks
 		}
 
 		out = append(out, &model.Item{

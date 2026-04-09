@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"strings"
 	"time"
 )
 
 func nowMillis() int64 { return time.Now().UnixMilli() }
 
 var cubelvLinkRe = regexp.MustCompile(`\[([^\]]*)\]\((?:cubelv|CubeLV)://(\w+)/([a-zA-Z0-9_-]+)[^)]*\)`)
+
+type BacklinkEntry struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
 
 func extractLinkTargetIDs(content string) map[string]bool {
 	if content == "" {
@@ -27,34 +31,25 @@ func extractLinkTargetIDs(content string) map[string]bool {
 	return ids
 }
 
-func buildBacklinkString(sourceName, sourceType, sourceID string) string {
-	return fmt.Sprintf("[%s](cubelv://%s/%s)", sourceName, strings.ToLower(sourceType), sourceID)
-}
-
-func linkedFromContainsID(linkedFrom []string, sourceID string) bool {
-	suffix := "/" + sourceID + ")"
-	for _, entry := range linkedFrom {
-		if strings.HasSuffix(entry, suffix) || strings.Contains(entry, "/"+sourceID+"?") {
+func backlinksContain(entries []BacklinkEntry, sourceID, entryType string) bool {
+	for _, e := range entries {
+		if e.ID == sourceID && e.Type == entryType {
 			return true
 		}
 	}
 	return false
 }
 
-func removeFromLinkedFrom(linkedFrom []string, sourceID string) []string {
-	suffix := "/" + sourceID + ")"
-	alt := "/" + sourceID + "?"
-	result := make([]string, 0, len(linkedFrom))
-	for _, entry := range linkedFrom {
-		if !strings.HasSuffix(entry, suffix) && !strings.Contains(entry, alt) {
-			result = append(result, entry)
+func removeFromBacklinks(entries []BacklinkEntry, sourceID, entryType string) []BacklinkEntry {
+	result := make([]BacklinkEntry, 0, len(entries))
+	for _, e := range entries {
+		if !(e.ID == sourceID && e.Type == entryType) {
+			result = append(result, e)
 		}
 	}
 	return result
 }
 
-// ProcessBacklinksOnContentChange 在 UpsertItem 中呼叫：
-// 比較 oldContent 和 newContent，更新目標 items 的 linked_from
 func (s *PgStore) ProcessBacklinksOnContentChange(
 	ctx context.Context, tx *sql.Tx,
 	sourceID, sourceName, sourceType string,
@@ -80,38 +75,53 @@ func (s *PgStore) ProcessBacklinksOnContentChange(
 		return
 	}
 
-	backlinkStr := buildBacklinkString(sourceName, sourceType, sourceID)
-
 	for _, targetID := range added {
-		s.addBacklink(ctx, tx, targetID, sourceID, backlinkStr, actorID)
+		s.addBacklink(ctx, tx, targetID, sourceID, "mention", actorID)
 	}
 	for _, targetID := range removed {
-		s.removeBacklink(ctx, tx, targetID, sourceID, actorID)
+		s.removeBacklink(ctx, tx, targetID, sourceID, "mention", actorID)
 	}
 }
 
-func (s *PgStore) addBacklink(ctx context.Context, tx *sql.Tx, targetID, sourceID, backlinkStr, actorID string) {
+func (s *PgStore) ProcessBacklinksOnSubjectChange(
+	ctx context.Context, tx *sql.Tx,
+	sourceID string,
+	oldSubjectID, newSubjectID string,
+	actorID string,
+) {
+	if oldSubjectID == newSubjectID {
+		return
+	}
+	if oldSubjectID != "" {
+		s.removeBacklink(ctx, tx, oldSubjectID, sourceID, "child", actorID)
+	}
+	if newSubjectID != "" {
+		s.addBacklink(ctx, tx, newSubjectID, sourceID, "child", actorID)
+	}
+}
+
+func (s *PgStore) addBacklink(ctx context.Context, tx *sql.Tx, targetID, sourceID, entryType, actorID string) {
 	var raw string
 	var ver int
 	err := tx.QueryRowContext(ctx,
-		`SELECT linked_from, version FROM base_items WHERE id = $1`, targetID,
+		`SELECT backlinks, version FROM base_items WHERE id = $1`, targetID,
 	).Scan(&raw, &ver)
 	if err != nil {
 		return
 	}
-	var arr []string
+	var arr []BacklinkEntry
 	json.Unmarshal([]byte(raw), &arr)
-	if linkedFromContainsID(arr, sourceID) {
+	if backlinksContain(arr, sourceID, entryType) {
 		return
 	}
-	arr = append(arr, backlinkStr)
+	arr = append(arr, BacklinkEntry{ID: sourceID, Type: entryType})
 	data, _ := json.Marshal(arr)
 	newVer := ver + 1
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE base_items SET linked_from = $1, version = $2 WHERE id = $3`,
+		`UPDATE base_items SET backlinks = $1, version = $2 WHERE id = $3`,
 		string(data), newVer, targetID,
 	); err != nil {
-		log.Printf("[LinkedFrom] mirror add backlink to %s failed: %v", targetID, err)
+		log.Printf("[Backlinks] mirror add backlink to %s failed: %v", targetID, err)
 		return
 	}
 	tx.ExecContext(ctx,
@@ -121,33 +131,33 @@ func (s *PgStore) addBacklink(ctx context.Context, tx *sql.Tx, targetID, sourceI
 	)
 }
 
-func (s *PgStore) removeBacklink(ctx context.Context, tx *sql.Tx, targetID, sourceID, actorID string) {
+func (s *PgStore) removeBacklink(ctx context.Context, tx *sql.Tx, targetID, sourceID, entryType, actorID string) {
 	var raw string
 	var ver int
 	err := tx.QueryRowContext(ctx,
-		`SELECT linked_from, version FROM base_items WHERE id = $1`, targetID,
+		`SELECT backlinks, version FROM base_items WHERE id = $1`, targetID,
 	).Scan(&raw, &ver)
 	if err != nil {
 		return
 	}
-	var arr []string
+	var arr []BacklinkEntry
 	json.Unmarshal([]byte(raw), &arr)
-	cleaned := removeFromLinkedFrom(arr, sourceID)
+	cleaned := removeFromBacklinks(arr, sourceID, entryType)
 	if len(cleaned) == len(arr) {
 		return
 	}
 	data, _ := json.Marshal(cleaned)
 	newVer := ver + 1
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE base_items SET linked_from = $1, version = $2 WHERE id = $3`,
+		`UPDATE base_items SET backlinks = $1, version = $2 WHERE id = $3`,
 		string(data), newVer, targetID,
 	); err != nil {
-		log.Printf("[LinkedFrom] mirror remove backlink from %s failed: %v", targetID, err)
+		log.Printf("[Backlinks] mirror remove backlink from %s failed: %v", targetID, err)
 		return
 	}
 	tx.ExecContext(ctx,
-		`INSERT INTO sync_changes (item_id, item_version, change_type, actor_id, details, created_at)
-		 VALUES ($1, $2, 'updated', $3, 'backlink-remove', $4)`,
+		fmt.Sprintf(`INSERT INTO sync_changes (item_id, item_version, change_type, actor_id, details, created_at)
+		 VALUES ($1, $2, 'updated', $3, 'backlink-remove', $4)`),
 		targetID, newVer, actorID, nowMillis(),
 	)
 }
